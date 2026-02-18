@@ -1,7 +1,6 @@
 import { PrismaClient } from '@prisma/client';
-import { DateTime } from 'luxon';
-import { ShiftService } from './shiftService.js';
 import { AuditLogService } from './auditLogService.js';
+import { NotificationService } from './notificationService.js';
 
 const prisma = new PrismaClient();
 
@@ -52,15 +51,7 @@ export const TimeOffService = {
       throw new Error('Overlapping time-off request already exists');
     }
 
-    // Check for overlapping scheduled shifts
-    const shifts = await ShiftService.getShiftsByEmployee(orgId, employeeId, startDate, endDate);
-    const hasConflicts = shifts.length > 0;
-
-    if (hasConflicts) {
-      throw new Error('Time-off request conflicts with scheduled shifts');
-    }
-
-    return await prisma.timeOffRequest.create({
+    const createdRequest = await prisma.timeOffRequest.create({
       data: {
         orgId,
         employeeId,
@@ -71,31 +62,42 @@ export const TimeOffService = {
         status: 'PENDING',
       },
     });
+
+    const reviewers = await prisma.user.findMany({
+      where: {
+        orgId,
+        role: { in: ['ADMIN', 'MANAGER'] },
+        isActive: true,
+      },
+      select: { id: true, firstName: true, lastName: true },
+    });
+
+    await Promise.all(
+      reviewers.map((reviewer) =>
+        NotificationService.createNotification(
+          orgId,
+          reviewer.id,
+          'Time-Off Request Submitted',
+          `${employee.firstName} ${employee.lastName} submitted a time-off request.`,
+          'TIME_OFF_REQUEST',
+          createdRequest.id,
+          'TIME_OFF_REQUEST'
+        )
+      )
+    );
+
+    return createdRequest;
   },
 
   async updateRequest(requestId: string, orgId: string, data: TimeOffRequestUpdate) {
     const { status, approvedById, notes } = data;
 
-    const request = await prisma.timeOffRequest.findUnique({
-      where: {	id: requestId, orgId },
+    const request = await prisma.timeOffRequest.findFirst({
+      where: { id: requestId, orgId },
     });
 
     if (!request) {
       throw new Error('Time-off request not found');
-    }
-
-    if (status === 'APPROVED' && request.status === 'PENDING') {
-      // Check for shift conflicts
-      const shifts = await ShiftService.getShiftsByEmployee(
-        orgId,
-        request.employeeId,
-        request.startDate.toISOString(),
-        request.endDate.toISOString()
-      );
-
-      if (shifts.length > 0) {
-        throw new Error('Cannot approve: conflicts with scheduled shifts');
-      }
     }
 
     const updatedRequest = await prisma.timeOffRequest.update({
@@ -129,11 +131,25 @@ export const TimeOffService = {
       );
     }
 
+    if (status === 'APPROVED' || status === 'DENIED') {
+      await NotificationService.createNotification(
+        orgId,
+        request.employeeId,
+        status === 'APPROVED' ? 'Time-Off Request Approved' : 'Time-Off Request Denied',
+        status === 'APPROVED'
+          ? 'Your time-off request has been approved.'
+          : 'Your time-off request was denied.',
+        status === 'APPROVED' ? 'TIME_OFF_APPROVED' : 'TIME_OFF_DENIED',
+        requestId,
+        'TIME_OFF_REQUEST'
+      );
+    }
+
     return updatedRequest;
   },
 
   async getRequest(requestId: string, orgId: string) {
-    return await prisma.timeOffRequest.findUnique({
+    return await prisma.timeOffRequest.findFirst({
       where: { id: requestId, orgId },
       include: {
         employee: { include: { employeeProfile: true } },
@@ -161,7 +177,7 @@ export const TimeOffService = {
   },
 
   async deleteRequest(requestId: string, orgId: string) {
-    const request = await prisma.timeOffRequest.findUnique({
+    const request = await prisma.timeOffRequest.findFirst({
       where: { id: requestId, orgId },
     });
 

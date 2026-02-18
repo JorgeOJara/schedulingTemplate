@@ -1,8 +1,10 @@
 import { Router } from 'express';
+import { PrismaClient } from '@prisma/client';
 import { ScheduleService } from '../../services/scheduleService.js';
 import { AuthRequest } from '../../middleware/auth.js';
 
 const router = Router();
+const prisma = new PrismaClient();
 
 // GET /api/v1/schedules/week
 router.get('/week', async (req: AuthRequest, res) => {
@@ -19,7 +21,8 @@ router.get('/week', async (req: AuthRequest, res) => {
 // GET /api/v1/schedules/week/:id
 router.get('/week/:id', async (req: AuthRequest, res) => {
   try {
-    const week = await ScheduleService.getScheduleWeek(req.params.id, req.user!.orgId);
+    const weekId = String(req.params.id);
+    const week = await ScheduleService.getScheduleWeek(weekId, req.user!.orgId);
     
     if (!week) {
       return res.status(404).json({ error: 'Schedule week not found' });
@@ -63,8 +66,9 @@ router.post('/week/ensure', async (req: AuthRequest, res) => {
 // PUT /api/v1/schedules/week/:id/publish
 router.put('/week/:id/publish', async (req: AuthRequest, res) => {
   try {
+    const weekId = String(req.params.id);
     const week = await ScheduleService.publishSchedule(
-      req.params.id,
+      weekId,
       req.user!.orgId,
       req.user!.id
     );
@@ -79,8 +83,9 @@ router.put('/week/:id/publish', async (req: AuthRequest, res) => {
 // PUT /api/v1/schedules/week/:id/unpublish
 router.put('/week/:id/unpublish', async (req: AuthRequest, res) => {
   try {
+    const weekId = String(req.params.id);
     const week = await ScheduleService.unpublishSchedule(
-      req.params.id,
+      weekId,
       req.user!.orgId,
       req.user!.id
     );
@@ -95,7 +100,8 @@ router.put('/week/:id/unpublish', async (req: AuthRequest, res) => {
 // DELETE /api/v1/schedules/week/:id
 router.delete('/week/:id', async (req: AuthRequest, res) => {
   try {
-    await ScheduleService.deleteScheduleWeek(req.params.id, req.user!.orgId);
+    const weekId = String(req.params.id);
+    await ScheduleService.deleteScheduleWeek(weekId, req.user!.orgId);
     
     res.status(204).send();
   } catch (error) {
@@ -131,6 +137,43 @@ router.get('/my-schedule', async (req: AuthRequest, res) => {
     res.status(200).json(shifts);
   } catch (error) {
     console.error('Get my schedule error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/v1/schedules/employee/:employeeId
+router.get('/employee/:employeeId', async (req: AuthRequest, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const employeeId = String(req.params.employeeId);
+
+    const employee = await prisma.user.findFirst({
+      where: { id: employeeId, orgId: req.user!.orgId, isActive: true },
+      select: { id: true, role: true },
+    });
+
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    const currentUserRole = req.user!.role;
+    const canView =
+      ['ADMIN', 'MANAGER'].includes(currentUserRole) || employee.role === currentUserRole;
+
+    if (!canView) {
+      return res.status(403).json({ error: 'Can only view schedules for users in your role group' });
+    }
+
+    const shifts = await ScheduleService.getEmployeeSchedule(
+      req.user!.orgId,
+      employeeId,
+      String(startDate),
+      String(endDate)
+    );
+
+    res.status(200).json(shifts);
+  } catch (error) {
+    console.error('Get employee schedule error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

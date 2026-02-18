@@ -7,6 +7,7 @@ const router = Router();
 
 const clockInSchema = z.object({
   shiftId: z.string().uuid().optional(),
+  force: z.boolean().optional(),
 });
 
 const clockOutSchema = z.object({
@@ -36,7 +37,7 @@ router.get('/status', async (req: AuthRequest, res) => {
 router.post('/clock-in', async (req: AuthRequest, res) => {
   try {
     const body = clockInSchema.parse(req.body ?? {});
-    const entry = await TimeClockService.clockIn(req.user!.orgId, req.user!.id, body.shiftId);
+    const entry = await TimeClockService.clockIn(req.user!.orgId, req.user!.id, body.shiftId, body.force);
     res.status(201).json(entry);
   } catch (error: any) {
     console.error('Clock-in error:', error);
@@ -71,6 +72,58 @@ router.get('/my-week', async (req: AuthRequest, res) => {
   } catch (error: any) {
     console.error('Get my weekly hours error:', error);
     res.status(400).json({ error: error.message || 'Unable to get weekly hours' });
+  }
+});
+
+// GET /api/v1/time-clock/overtime-requests
+router.get('/overtime-requests', async (req: AuthRequest, res) => {
+  try {
+    if (!['ADMIN', 'MANAGER'].includes(req.user!.role)) {
+      return res.status(403).json({ error: 'Only managers can review overtime requests' });
+    }
+    const requests = await TimeClockService.getPendingOvertimeRequests(req.user!.orgId);
+    res.status(200).json(requests);
+  } catch (error: any) {
+    console.error('Get overtime requests error:', error);
+    res.status(400).json({ error: error.message || 'Unable to get overtime requests' });
+  }
+});
+
+// PUT /api/v1/time-clock/overtime-requests/:id/approve
+router.put('/overtime-requests/:id/approve', async (req: AuthRequest, res) => {
+  try {
+    if (!['ADMIN', 'MANAGER'].includes(req.user!.role)) {
+      return res.status(403).json({ error: 'Only managers can approve overtime requests' });
+    }
+    const updated = await TimeClockService.reviewOvertimeRequest(
+      req.user!.orgId,
+      req.user!.id,
+      String(req.params.id),
+      'APPROVE'
+    );
+    res.status(200).json(updated);
+  } catch (error: any) {
+    console.error('Approve overtime request error:', error);
+    res.status(400).json({ error: error.message || 'Unable to approve overtime request' });
+  }
+});
+
+// PUT /api/v1/time-clock/overtime-requests/:id/deny
+router.put('/overtime-requests/:id/deny', async (req: AuthRequest, res) => {
+  try {
+    if (!['ADMIN', 'MANAGER'].includes(req.user!.role)) {
+      return res.status(403).json({ error: 'Only managers can deny overtime requests' });
+    }
+    const updated = await TimeClockService.reviewOvertimeRequest(
+      req.user!.orgId,
+      req.user!.id,
+      String(req.params.id),
+      'DENY'
+    );
+    res.status(200).json(updated);
+  } catch (error: any) {
+    console.error('Deny overtime request error:', error);
+    res.status(400).json({ error: error.message || 'Unable to deny overtime request' });
   }
 });
 

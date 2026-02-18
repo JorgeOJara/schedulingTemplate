@@ -77,4 +77,22 @@ export const UserService = {
       orderBy: { createdAt: 'desc' },
     });
   },
+
+  async getPeersByRole(orgId: string, role: string, excludeUserId?: string) {
+    return await prisma.user.findMany({
+      where: {
+        orgId,
+        role,
+        isActive: true,
+        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+      },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+    });
+  },
 };

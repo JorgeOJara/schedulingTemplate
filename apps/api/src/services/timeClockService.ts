@@ -127,7 +127,7 @@ export const TimeClockService = {
     };
   },
 
-  async clockIn(orgId: string, userId: string, shiftId?: string) {
+  async clockIn(orgId: string, userId: string, shiftId?: string, force = false) {
     const now = DateTime.now();
     const org = await prisma.organization.findFirst({
       where: { id: orgId },
@@ -152,6 +152,23 @@ export const TimeClockService = {
     }
 
     let shift = null;
+    if (force && !shiftId) {
+      return await prisma.timeEntry.create({
+        data: {
+          orgId,
+          employeeId: userId,
+          shiftId: null,
+          clockInAt: now.toJSDate(),
+          scheduledStart: null,
+          scheduledEnd: null,
+          isLate: false,
+          lateByMinutes: 0,
+          status: 'CLOCKED_IN',
+          notes: 'Manual clock-in (force)',
+        },
+      });
+    }
+
     if (shiftId) {
       shift = await prisma.shift.findFirst({
         where: {
@@ -160,6 +177,9 @@ export const TimeClockService = {
           scheduleWeek: { orgId },
         },
       });
+      if (!shift) {
+        throw new Error('Assigned shift not found for clock in');
+      }
     } else {
       const shifts = await prisma.shift.findMany({
         where: {
@@ -174,8 +194,22 @@ export const TimeClockService = {
       shift = findBestEligibleShift(shifts, now, org.clockInEarlyAllowanceMinutes || 5).shift;
     }
 
+    // Allow manual clock-ins when there is no eligible assigned shift.
     if (!shift) {
-      throw new Error('No eligible assigned shift found for clock in');
+      return await prisma.timeEntry.create({
+        data: {
+          orgId,
+          employeeId: userId,
+          shiftId: null,
+          clockInAt: now.toJSDate(),
+          scheduledStart: null,
+          scheduledEnd: null,
+          isLate: false,
+          lateByMinutes: 0,
+          status: 'CLOCKED_IN',
+          notes: 'Manual clock-in (no assigned shift)',
+        },
+      });
     }
 
     const allowance = org.clockInEarlyAllowanceMinutes || 5;
@@ -184,17 +218,6 @@ export const TimeClockService = {
       shift.endTime,
       allowance
     );
-    const priorEntryForShift = await prisma.timeEntry.findFirst({
-      where: {
-        orgId,
-        employeeId: userId,
-        shiftId: shift.id,
-      },
-    });
-    if (priorEntryForShift) {
-      throw new Error('Shift already has a clock record');
-    }
-
     if (now < earliestClockIn) {
       throw new Error(
         `Too early to clock in. Earliest allowed clock-in is ${earliestClockIn.toFormat('h:mm a')}`
@@ -205,11 +228,24 @@ export const TimeClockService = {
       throw new Error('This shift is no longer eligible for clock in');
     }
 
-    const lateByMinutes = Math.max(
-      Math.floor((now.toJSDate().getTime() - shift.startTime.getTime()) / (1000 * 60)),
-      0
-    );
-    const isLate = lateByMinutes > 0;
+    const existingEntriesForShift = await prisma.timeEntry.findMany({
+      where: {
+        orgId,
+        employeeId: userId,
+        shiftId: shift.id,
+      },
+      orderBy: { clockInAt: 'asc' },
+    });
+
+    if (existingEntriesForShift.length >= 3) {
+      throw new Error('Maximum of 3 clock-in/out records allowed for this shift');
+    }
+
+    const isFirstClockInForShift = existingEntriesForShift.length === 0;
+    const lateByMinutes = isFirstClockInForShift
+      ? Math.max(Math.floor((now.toJSDate().getTime() - shift.startTime.getTime()) / (1000 * 60)), 0)
+      : 0;
+    const isLate = isFirstClockInForShift && lateByMinutes > 0;
 
     const entry = await prisma.timeEntry.create({
       data: {
@@ -315,12 +351,15 @@ export const TimeClockService = {
       throw new Error('Clock-out time must be after clock-in time');
     }
 
-    const workedMinutes = calculateWorkedMinutes(entry.clockInAt, now);
+    const needsOvertimeApproval =
+      Boolean(entry.scheduledEnd) && now.getTime() > (entry.scheduledEnd as Date).getTime();
+
+    const nextStatus = needsOvertimeApproval ? 'PENDING_OVERTIME_APPROVAL' : 'CLOCKED_OUT';
     const updated = await prisma.timeEntry.update({
       where: { id: entry.id },
       data: {
         clockOutAt: now,
-        status: 'CLOCKED_OUT',
+        status: nextStatus,
       },
       include: {
         shift: {
@@ -332,10 +371,45 @@ export const TimeClockService = {
       },
     });
 
+    const workedMinutes = calculateWorkedMinutes(entry.clockInAt, now);
+
+    if (needsOvertimeApproval) {
+      const [employee, managers] = await Promise.all([
+        prisma.user.findFirst({
+          where: { id: userId },
+          select: { firstName: true, lastName: true },
+        }),
+        prisma.user.findMany({
+          where: {
+            orgId,
+            isActive: true,
+            role: { in: ['ADMIN', 'MANAGER'] },
+          },
+          select: { id: true },
+        }),
+      ]);
+
+      const employeeName = employee ? `${employee.firstName} ${employee.lastName}` : 'An employee';
+      await Promise.all(
+        managers.map((manager) =>
+          NotificationService.createNotification(
+            orgId,
+            manager.id,
+            'Overtime Approval Needed',
+            `${employeeName} clocked out after scheduled end and needs approval.`,
+            'OVERTIME_APPROVAL',
+            updated.id,
+            'TIME_ENTRY'
+          )
+        )
+      );
+    }
+
     return {
       ...updated,
       workedMinutes,
       workedHours: asHours(workedMinutes),
+      needsOvertimeApproval,
     };
   },
 
@@ -377,7 +451,11 @@ export const TimeClockService = {
 
     const actualMinutes = entries.reduce((acc, entry) => {
       if (!entry.clockOutAt) return acc;
-      return acc + calculateWorkedMinutes(entry.clockInAt, entry.clockOutAt);
+      const effectiveClockOutAt =
+        entry.status === 'PENDING_OVERTIME_APPROVAL' && entry.scheduledEnd
+          ? (entry.scheduledEnd as Date)
+          : entry.clockOutAt;
+      return acc + calculateWorkedMinutes(entry.clockInAt, effectiveClockOutAt);
     }, 0);
 
     const scheduledMinutes = shifts.reduce((acc, shift) => {
@@ -468,7 +546,11 @@ export const TimeClockService = {
     const actualByEmployee = new Map<string, { user: any; minutes: number; lateClockIns: number }>();
     for (const entry of entries) {
       if (!entry.employee) continue;
-      const worked = entry.clockOutAt ? calculateWorkedMinutes(entry.clockInAt, entry.clockOutAt) : 0;
+      const effectiveClockOutAt =
+        entry.clockOutAt && entry.status === 'PENDING_OVERTIME_APPROVAL' && entry.scheduledEnd
+          ? (entry.scheduledEnd as Date)
+          : entry.clockOutAt;
+      const worked = effectiveClockOutAt ? calculateWorkedMinutes(entry.clockInAt, effectiveClockOutAt) : 0;
       const existing = actualByEmployee.get(entry.employeeId);
       if (existing) {
         existing.minutes += worked;
@@ -530,5 +612,77 @@ export const TimeClockService = {
         actualHours: asHours(totalActualMinutes),
       },
     };
+  },
+
+  async getPendingOvertimeRequests(orgId: string) {
+    return await prisma.timeEntry.findMany({
+      where: {
+        orgId,
+        status: 'PENDING_OVERTIME_APPROVAL',
+        clockOutAt: { not: null },
+        scheduledEnd: { not: null },
+      },
+      include: {
+        employee: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          },
+        },
+        shift: {
+          include: {
+            department: true,
+            location: true,
+          },
+        },
+      },
+      orderBy: { clockOutAt: 'desc' },
+    });
+  },
+
+  async reviewOvertimeRequest(
+    orgId: string,
+    _approverId: string,
+    timeEntryId: string,
+    decision: 'APPROVE' | 'DENY'
+  ) {
+    const entry = await prisma.timeEntry.findFirst({
+      where: {
+        id: timeEntryId,
+        orgId,
+        status: 'PENDING_OVERTIME_APPROVAL',
+      },
+      include: {
+        employee: true,
+      },
+    });
+
+    if (!entry || !entry.clockOutAt || !entry.scheduledEnd) {
+      throw new Error('Overtime request not found');
+    }
+
+    const updated = await prisma.timeEntry.update({
+      where: { id: timeEntryId },
+      data:
+        decision === 'APPROVE'
+          ? { status: 'CLOCKED_OUT' }
+          : { status: 'CLOCKED_OUT', clockOutAt: entry.scheduledEnd },
+    });
+
+    await NotificationService.createNotification(
+      orgId,
+      entry.employeeId,
+      decision === 'APPROVE' ? 'Overtime Approved' : 'Overtime Denied',
+      decision === 'APPROVE'
+        ? 'Your late clock-out time was approved.'
+        : 'Your late clock-out time was denied and adjusted to scheduled end time.',
+      decision === 'APPROVE' ? 'OVERTIME_APPROVED' : 'OVERTIME_DENIED',
+      timeEntryId,
+      'TIME_ENTRY'
+    );
+
+    return updated;
   },
 };

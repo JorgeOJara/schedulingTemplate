@@ -98,17 +98,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
 
       <div className={`fixed left-0 z-30 h-full w-72 bg-gradient-to-b from-white to-teal-50 border-r border-teal-100 transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${isOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:w-auto`}>
         <div className="flex h-20 items-center px-6 border-b border-teal-100/60">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-600 text-white shadow-lg shadow-teal-600/30">
-              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-              </svg>
-            </div>
+          <div className="w-full text-center">
             <div className="flex-1">
-              <h1 className="hidden sm:block text-xl font-bold bg-gradient-to-r from-teal-700 to-teal-500 bg-clip-text text-transparent truncate" title={orgDisplayName}>
+              <h1 className="hidden sm:block text-xl font-bold bg-gradient-to-r from-teal-700 to-teal-500 bg-clip-text text-transparent truncate text-center" title={orgDisplayName}>
                 {orgDisplayName}
               </h1>
-              <h1 className="sm:hidden text-lg font-bold bg-gradient-to-r from-teal-700 to-teal-500 bg-clip-text text-transparent truncate" title={orgDisplayName}>
+              <h1 className="sm:hidden text-lg font-bold bg-gradient-to-r from-teal-700 to-teal-500 bg-clip-text text-transparent truncate text-center" title={orgDisplayName}>
                 {getInitials(orgDisplayName)}
               </h1>
             </div>

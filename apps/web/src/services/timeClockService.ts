@@ -20,8 +20,8 @@ export const getClockStatus = async (): Promise<ClockStatus> => {
   return response.data;
 };
 
-export const clockIn = async (shiftId?: string) => {
-  const response = await api.post('/time-clock/clock-in', { shiftId });
+export const clockIn = async (shiftId?: string, force?: boolean) => {
+  const response = await api.post('/time-clock/clock-in', { shiftId, force });
   return response.data;
 };
 

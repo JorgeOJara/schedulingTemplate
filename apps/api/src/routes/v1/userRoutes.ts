@@ -16,6 +16,17 @@ router.get('/me', async (req: AuthRequest, res) => {
   }
 });
 
+// GET /api/v1/users/peers
+router.get('/peers', async (req: AuthRequest, res) => {
+  try {
+    const peers = await UserService.getPeersByRole(req.user!.orgId, req.user!.role, req.user!.id);
+    res.status(200).json(peers);
+  } catch (error) {
+    console.error('Get peers error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // PUT /api/v1/users/me
 router.put('/me', async (req: AuthRequest, res) => {
   try {
