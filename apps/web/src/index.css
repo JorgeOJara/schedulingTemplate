@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-50;
+}
+
+#root {
+  @apply min-h-screen;
+}
+
+/* Custom responsive utilities */
+.sm-text-ellipsis {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Mobile optimization */
+@media (max-width: 640px) {
+  .sm-text-ellipsis {
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    display: block;
+  }
+}

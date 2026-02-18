@@ -1,0 +1,84 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: scheduling-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: scheduling
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d
+    networks:
+      - scheduling_network
+
+  adminer:
+    image: adminer:4.8.1
+    container_name: scheduling-adminer
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    depends_on:
+      - mysql
+    networks:
+      - scheduling_network
+
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: ../../infra/docker/api/Dockerfile
+    container_name: scheduling-api
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATABASE_URL=mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/scheduling
+      - JWT_SECRET=${API_JWT_SECRET}
+      - JWT_EXPIRY=15m
+      - REFRESH_TOKEN_EXPIRY=7d
+      - CORS_ORIGINS=http://localhost:5173
+      - COOKIE_SECURE=false
+      - RATE_LIMIT_WINDOW=900000
+      - RATE_LIMIT_MAX=100
+      - LOG_LEVEL=debug
+    volumes:
+      - ../../apps/api:/app
+      - /app/node_modules
+    command: bun run dev
+    depends_on:
+      - mysql
+    networks:
+      - scheduling_network
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: ../../infra/docker/web/Dockerfile
+    container_name: scheduling-web
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:3001/api
+    volumes:
+      - ../../apps/web:/app
+      - /app/node_modules
+      - /app/dist
+    command: bun run dev
+    depends_on:
+      - api
+    networks:
+      - scheduling_network
+
+networks:
+  scheduling_network:
+    driver: bridge
+
+volumes:
+  mysql_data:

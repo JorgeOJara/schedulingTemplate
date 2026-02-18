@@ -1,0 +1,276 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id                   String    @id @default(uuid())
+  name                 String    @unique
+  timezone             String
+  dailyOtcThreshold    Int       @default(8)
+  weeklyOtcThreshold   Int       @default(40)
+  minRestBetweenShifts Int       @default(8)
+  maxHoursPerWeek      Int       @default(40)
+  setupCompleted       Boolean   @default(false)
+  clockInEarlyAllowanceMinutes Int @default(5)
+  schedulingMode       String    @default("PASSIVE")
+  aiAutoScheduleEnabled Boolean  @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  users                User[]
+  departments          Department[]
+  locations            Location[]
+  businessHours        BusinessHour[]
+  defaultShiftTemplates DefaultShiftTemplate[]
+  scheduleWeeks        ScheduleWeek[]
+  timeEntries          TimeEntry[]
+  timeOffRequests      TimeOffRequest[]
+  shiftSwapRequests    ShiftSwapRequest[]
+  notifications        Notification[]
+  auditLogs            AuditLog[]
+}
+
+model User {
+  id                        String    @id @default(uuid())
+  email                     String    @unique
+  passwordHash              String
+  firstName                 String
+  lastName                  String
+  role                      String    @default("EMPLOYEE")
+  orgId                     String
+  isActive                  Boolean   @default(true)
+  emailVerified             Boolean   @default(false)
+  lastLoginAt               DateTime?
+  inviteToken               String?
+  inviteTokenExpiry         DateTime?
+  passwordResetToken        String?
+  passwordResetTokenExpiry  DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+  org                       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  employeeProfile           EmployeeProfile?
+  timeOffRequests           TimeOffRequest[] @relation("EmployeeTimeOffRequests")
+  timeOffApprovals          TimeOffRequest[] @relation("AdminTimeOffApprovals")
+  shiftSwapRequestors       ShiftSwapRequest[] @relation("ShiftSwapRequestor")
+  shiftSwapResponders       ShiftSwapRequest[] @relation("ShiftSwapResponder")
+  auditLogs                 AuditLog[]
+  notifications             Notification[]
+  scheduledShifts           Shift[]
+  timeEntries               TimeEntry[]
+}
+
+model EmployeeProfile {
+  id                      String    @id @default(uuid())
+  userId                  String    @unique
+  bio                     String?
+  phone                   String?
+  emergencyContactName    String?
+  emergencyContactPhone   String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Department {
+  id        String    @id @default(uuid())
+  name      String
+  description String?
+  orgId     String
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  shifts    Shift[]
+  defaultShiftTemplates DefaultShiftTemplate[]
+}
+
+model Location {
+  id        String    @id @default(uuid())
+  name      String
+  address   String?
+  phone     String?
+  orgId     String
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  shifts    Shift[]
+  defaultShiftTemplates DefaultShiftTemplate[]
+}
+
+model ScheduleWeek {
+  id           String    @id @default(uuid())
+  orgId        String
+  startDate    DateTime
+  endDate      DateTime
+  state        String    @default("DRAFT")
+  publishedAt  DateTime?
+  version      Int       @default(1)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  shifts       Shift[]
+  
+  @@unique([orgId, startDate, endDate])
+}
+
+model Shift {
+  id                   String    @id @default(uuid())
+  scheduleWeekId       String
+  employeeId           String?
+  departmentId         String?
+  locationId           String?
+  startTime            DateTime
+  endTime              DateTime
+  breakDurationMinutes Int       @default(0)
+  breakIsPaid          Boolean   @default(false)
+  notes                String?
+  shiftType            String    @default("REGULAR")
+  isOnCall             Boolean   @default(false)
+  status               String    @default("SCHEDULED")
+  shiftGroup           String?   @default("morning")
+  version              Int       @default(1)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  scheduleWeek         ScheduleWeek @relation(fields: [scheduleWeekId], references: [id], onDelete: Cascade)
+  employee             User?      @relation(fields: [employeeId], references: [id])
+  department           Department? @relation(fields: [departmentId], references: [id])
+  location             Location?  @relation(fields: [locationId], references: [id])
+  timeEntries          TimeEntry[]
+  
+  @@index([scheduleWeekId])
+  @@index([employeeId])
+  @@index([shiftGroup])
+}
+
+model BusinessHour {
+  id        String   @id @default(uuid())
+  orgId     String
+  dayOfWeek Int
+  openTime  String?
+  closeTime String?
+  isClosed  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, dayOfWeek])
+  @@index([orgId])
+}
+
+model DefaultShiftTemplate {
+  id                   String   @id @default(uuid())
+  orgId                String
+  name                 String
+  dayOfWeek            Int
+  startTime            String
+  endTime              String
+  breakDurationMinutes Int      @default(0)
+  requiredHeadcount    Int      @default(1)
+  departmentId         String?
+  locationId           String?
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  org                  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  department           Department? @relation(fields: [departmentId], references: [id])
+  location             Location? @relation(fields: [locationId], references: [id])
+
+  @@index([orgId])
+  @@index([departmentId])
+  @@index([locationId])
+}
+
+model TimeEntry {
+  id             String   @id @default(uuid())
+  orgId          String
+  employeeId     String
+  shiftId        String?
+  clockInAt      DateTime
+  clockOutAt     DateTime?
+  scheduledStart DateTime?
+  scheduledEnd   DateTime?
+  isLate         Boolean  @default(false)
+  lateByMinutes  Int      @default(0)
+  status         String   @default("CLOCKED_IN")
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  employee       User @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shift          Shift? @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, employeeId])
+  @@index([shiftId])
+  @@index([clockInAt])
+}
+
+model TimeOffRequest {
+  id              String    @id @default(uuid())
+  orgId           String
+  employeeId      String
+  startDate       DateTime
+  endDate         DateTime
+  type            String
+  reason          String
+  status          String    @default("PENDING")
+  approvedById    String?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  employee        User         @relation("EmployeeTimeOffRequests", fields: [employeeId], references: [id])
+  approvedBy      User?        @relation("AdminTimeOffApprovals", fields: [approvedById], references: [id])
+}
+
+model ShiftSwapRequest {
+  id                    String    @id @default(uuid())
+  orgId                 String
+  requestorId           String
+  responderId           String?
+  proposedShiftIds      String
+  requestedShiftIds     String?
+  type                  String
+  reason                String
+  status                String    @default("PENDING")
+  approvedById          String?
+  notes                 String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  org                   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  requestor             User         @relation("ShiftSwapRequestor", fields: [requestorId], references: [id])
+  responder             User?        @relation("ShiftSwapResponder", fields: [responderId], references: [id])
+}
+
+model AuditLog {
+  id           String    @id @default(uuid())
+  orgId        String
+  userId       String?
+  action       String
+  targetType   String
+  targetId     String?
+  details      String?
+  ipAddress    String?
+  createdAt    DateTime  @default(now())
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id])
+}
+
+model Notification {
+  id           String    @id @default(uuid())
+  orgId        String
+  userId       String
+  type         String
+  title        String
+  message      String
+  isRead       Boolean   @default(false)
+  relatedId    String?
+  relatedType  String?
+  createdAt    DateTime  @default(now())
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id])
+}

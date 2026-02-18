@@ -1,0 +1,388 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id                         String    @id @default(uuid())
+  name                       String
+  timezone                   String    @default("America/New_York")
+  dailyOtcThreshold          Int       @default(8)
+  weeklyOtcThreshold         Int       @default(40)
+  minRestBetweenShifts       Int       @default(8)
+  maxHoursPerWeek            Int       @default(40)
+  users                      User[]
+  departments                Department[]
+  locations                  Location[]
+  shiftTemplates             ShiftTemplate[]
+  scheduleWeeks              ScheduleWeek[]
+  timeOffRequests            TimeOffRequest[]
+  shiftSwapRequests          ShiftSwapRequest[]
+  auditLogs                  AuditLog[]
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  @@map("organizations")
+}
+
+model User {
+  id                         String    @id @default(uuid())
+  email                      String    @unique
+  passwordHash               String
+  firstName                  String
+  lastName                   String
+  role                       UserRole  @default(EMPLOYEE)
+  isActive                   Boolean   @default(true)
+  orgId                      String
+  org                        Organization @relation(fields: [orgId], references: [id], name: "OrgUsers")
+  employeeProfile            EmployeeProfile?
+  emailVerified              Boolean   @default(false)
+  emailVerificationToken     String?
+  passwordResetToken         String?
+  passwordResetTokenExpiry   DateTime?
+  inviteToken                String?
+  inviteTokenExpiry          DateTime?
+  lastLoginAt                DateTime?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  shifts                     Shift[]
+  timeOffRequests            TimeOffRequest[]
+  swapRequestAsRequestor     ShiftSwapRequest[] @relation("SwapRequestor")
+  swapRequestAsResponder     ShiftSwapRequest[] @relation("SwapResponder")
+  approvals                  Approval[]
+  auditLogsAsActor           AuditLog[] @relation("AuditActor")
+
+  @@map("users")
+  @@index([orgId])
+  @@index([email])
+}
+
+model EmployeeProfile {
+  id                         String    @id @default(uuid())
+  userId                     String    @unique
+  user                       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bio                        String?
+  phone                      String?
+  emergencyContactName       String?
+  emergencyContactPhone      String?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  @@map("employee_profiles")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum AuditAction {
+  SCHEDULE_PUBLISHED
+  SCHEDULE_UPDATED
+  SCHEDULE_UNPUBLISHED
+  SHIFT_CREATED
+  SHIFT_UPDATED
+  SHIFT_DELETED
+  SHIFT_STATUS_CHANGED
+  TIME_OFF_REQUESTED
+  TIME_OFF_APPROVED
+  TIME_OFF_DENIED
+  SWAP_REQUESTED
+  SWAP_ACCEPTED
+  SWAP_DENIED
+  SWAP_APPROVED
+  SWAP_REJECTED
+  USER_CREATED
+  USER_UPDATED
+  USER_DELETED
+  USER_PASSWORD_RESET
+  USER_INVITED
+  USER_REACTIVATED
+  USER_DEACTIVATED
+}
+
+model Department {
+  id                         String    @id @default(uuid())
+  name                       String
+  orgId                      String
+  org                        Organization @relation(fields: [orgId], references: [id], name: "OrgDepartments")
+  description                String?
+  active                     Boolean   @default(true)
+  shifts                     Shift[]
+  shiftTemplates             ShiftTemplate[]
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  @@map("departments")
+  @@index([orgId])
+}
+
+model Location {
+  id                         String    @id @default(uuid())
+  name                       String
+  orgId                      String
+  org                        Organization @relation(fields: [orgId], references: [id], name: "OrgLocations")
+  address                    String?
+  phone                      String?
+  active                     Boolean   @default(true)
+  shifts                     Shift[]
+  shiftTemplates             ShiftTemplate[]
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  @@map("locations")
+  @@index([orgId])
+}
+
+enum ShiftType {
+  REGULAR
+  ON_CALL
+  OVERTIME
+  DOUBLE_OVERTIME
+}
+
+enum ShiftStatus {
+  SCHEDULED
+  SWAPPED
+  CANCELLATION_REQUESTED
+}
+
+model Shift {
+  id                         String    @id @default(uuid())
+  scheduleWeekId             String
+  scheduleWeek               ScheduleWeek @relation(fields: [scheduleWeekId], references: [id], name: "WeekShifts")
+  employeeId                 String?
+  employee                   User?       @relation(fields: [employeeId], references: [id], name: "UserShifts")
+  departmentId               String?
+  department                 Department? @relation(fields: [departmentId], references: [id])
+  locationId                 String?
+  location                   Location?   @relation(fields: [locationId], references: [id])
+  startTime                  DateTime
+  endTime                    DateTime
+  breakDurationMinutes       Int         @default(0)
+  breakIsPaid                Boolean     @default(false)
+  notes                      String?
+  shiftType                  ShiftType   @default(REGULAR)
+  isOnCall                   Boolean     @default(false)
+  status                     ShiftStatus @default(SCHEDULED)
+  version                    Int         @default(1)
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  @@map("shifts")
+  @@index([scheduleWeekId])
+  @@index([employeeId])
+  @@index([departmentId])
+  @@index([locationId])
+  @@index([ startTime, endTime ])
+}
+
+model ShiftTemplate {
+  id                         String    @id @default(uuid())
+  orgId                      String
+  org                        Organization @relation(fields: [orgId], references: [id], name: "OrgTemplates")
+  name                       String
+  departmentId               String?
+  department                 Department? @relation(fields: [departmentId], references: [id])
+  locationId                 String?
+  location                   Location?   @relation(fields: [locationId], references: [id])
+  startTime                  DateTime
+  endTime                    DateTime
+  breakDurationMinutes       Int         @default(0)
+  isActive                   Boolean     @default(true)
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  @@map("shift_templates")
+  @@index([orgId])
+  @@index([departmentId])
+  @@index([locationId])
+}
+
+enum ScheduleState {
+  DRAFT
+  PUBLISHED
+}
+
+model ScheduleWeek {
+  id                         String    @id @default(uuid())
+  orgId                      String
+  org                        Organization @relation(fields: [orgId], references: [id], name: "OrgScheduleWeeks")
+  startDate                  DateTime
+  endDate                    DateTime
+  state                      ScheduleState @default(DRAFT)
+  publishedAt                DateTime?
+  version                    Int         @default(1)
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  shifts                     Shift[]
+  auditLogs                  AuditLog[]
+
+  @@map("schedule_weeks")
+  @@index([orgId])
+  @@index([startDate, endDate])
+  @@unique([orgId, startDate, endDate])
+}
+
+enum TimeOffStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+enum TimeOffType {
+  VACATION
+  SICK
+  PERSONAL
+  BEREAVEMENT
+  JURY_DUTY
+}
+
+model TimeOffRequest {
+  id                         String       @id @default(uuid())
+  orgId                      String
+  org                        Organization @relation(fields: [orgId], references: [id], name: "OrgTimeOffRequests")
+  employeeId                 String
+  employee                   User         @relation(fields: [employeeId], references: [id], name: "EmployeeTimeOffRequests")
+  startDate                  DateTime
+  endDate                    DateTime
+  type                       TimeOffType
+  reason                     String
+  status                     TimeOffStatus @default(PENDING)
+  approvedById               String?
+  approvedBy                 User?       @relation(fields: [approvedById], references: [id])
+  notes                      String?
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  approvals                  Approval[]
+  auditLogs                  AuditLog[]
+
+  @@map("time_off_requests")
+  @@index([orgId])
+  @@index([employeeId])
+  @@index([status])
+}
+
+enum SwapStatus {
+  PENDING
+  ACCEPTED
+  DENIED
+  APPROVED
+  REJECTED
+}
+
+enum SwapType {
+  FULL_DAY
+  PARTIAL_DAY
+  SHIFTS
+}
+
+model ShiftSwapRequest {
+  id                         String    @id @default(uuid())
+  orgId                      String
+  org                        Organization @relation(fields: [orgId], references: [id], name: "OrgSwapRequests")
+  requestorId                String
+  requestor                  User        @relation("SwapRequestor", fields: [requestorId], references: [id])
+  responderId                String
+  responder                  User        @relation("SwapResponder", fields: [responderId], references: [id])
+  proposedShiftIds           String
+  requestedShiftIds          String
+  type                       SwapType
+  reason                     String
+  status                     SwapStatus  @default(PENDING)
+  approvedById               String?
+  approvedBy                 User?       @relation(fields: [approvedById], references: [id])
+  notes                      String?
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  approvals                  Approval[]
+  auditLogs                  AuditLog[]
+
+  @@map("shift_swap_requests")
+  @@index([orgId])
+  @@index([requestorId])
+  @@index([responderId])
+  @@index([status])
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+model Approval {
+  id                         String       @id @default(uuid())
+  requestId                  String
+  requestType                ApprovalRequestType
+  approvedById               String
+  approvedBy                 User         @relation(fields: [approvedById], references: [id])
+  status                     ApprovalStatus @default(PENDING)
+  notes                      String?
+  createdAt                  DateTime     @default(now())
+
+  @@map("approvals")
+  @@index([requestId, requestType])
+  @@index([approvedById])
+}
+
+enum ApprovalRequestType {
+  TIME_OFF
+  SHIFT_SWAP
+}
+
+model AuditLog {
+  id                         String      @id @default(uuid())
+  orgId                      String
+  org                        Organization @relation(fields: [orgId], references: [id], name: "OrgAuditLogs")
+  actorId                    String?
+  actor                      User?       @relation("AuditActor", fields: [actorId], references: [id], name: "UserAuditLogs")
+  actorRole                  UserRole?
+  action                     AuditAction
+  resourceId                 String?
+  resourceType               String?
+  previousValues             Json?
+  newValue                   Json?
+  ipAddress                  String?
+  userAgent                  String?
+  createdAt                  DateTime    @default(now())
+
+  @@map("audit_logs")
+  @@index([orgId])
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model Notification {
+  id                         String      @id @default(uuid())
+  userId                     String
+  user                       User        @relation(fields: [userId], references: [id])
+  title                      String
+  message                    String
+  type                       NotificationType @default(INFO)
+  isRead                     Boolean     @default(false)
+  relatedId                  String?
+  relatedType                String?
+  createdAt                  DateTime    @default(now())
+
+  @@map("notifications")
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+}
