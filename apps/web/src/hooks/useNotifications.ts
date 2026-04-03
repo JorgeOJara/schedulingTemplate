@@ -20,10 +20,13 @@ export const useNotifications = () => {
 
   const fetchUnreadCount = async () => {
     try {
+      setIsLoading(true);
       const response = await api.get<{ count: number }>('/notifications/unread-count');
       setUnreadCount(response.data.count);
     } catch (error) {
       console.error('Failed to fetch unread count:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 

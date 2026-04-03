@@ -4,7 +4,7 @@ import { ShiftService } from './shiftService.js';
 const prisma = new PrismaClient();
 
 export const AnalyticsService = {
-  async getWeeklySummary(orgId: string, weekId?: string) {
+  async getWeeklySummary(orgId: string, weekId?: string, locationId?: string) {
     const now = new Date();
     
     let week = null;
@@ -49,7 +49,10 @@ export const AnalyticsService = {
     }
 
     const shifts = await prisma.shift.findMany({
-      where: { scheduleWeekId: scheduleWeekId },
+      where: {
+        scheduleWeekId: scheduleWeekId,
+        ...(locationId ? { locationId } : {}),
+      },
       include: { 
         employee: true,
         department: true,
@@ -136,6 +139,7 @@ export const AnalyticsService = {
 
     return {
       scheduleWeekId: week?.id || scheduleWeekId,
+      locationId: locationId ?? null,
       scheduleWeekState: week?.state,
       totalShifts: shifts.length,
       totalScheduledHours: overtime.totalHours,
@@ -217,6 +221,96 @@ export const AnalyticsService = {
       percentage,
       coverageCount: scheduledShifts,
       requiredCount: totalShifts,
+    };
+  },
+
+  async getCurrentMonthReport(orgId: string, locationId?: string) {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+    const [org, shifts, activeLocations] = await Promise.all([
+      prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { id: true, name: true, timezone: true },
+      }),
+      prisma.shift.findMany({
+        where: {
+          scheduleWeek: { orgId },
+          startTime: { gte: monthStart, lt: monthEnd },
+          ...(locationId ? { locationId } : {}),
+        },
+        include: {
+          employee: { select: { id: true } },
+          location: { select: { id: true, name: true, address: true } },
+        },
+        orderBy: { startTime: 'asc' },
+      }),
+      prisma.location.findMany({
+        where: { orgId, active: true },
+        select: { id: true, name: true, address: true },
+        orderBy: { name: 'asc' },
+      }),
+    ]);
+
+    if (!org) {
+      throw new Error('Organization not found');
+    }
+
+    const totalShifts = shifts.length;
+    const openShifts = shifts.filter((shift) => !shift.employeeId).length;
+    const assignedShifts = totalShifts - openShifts;
+    const scheduledEmployees = new Set(shifts.map((shift) => shift.employeeId).filter(Boolean)).size;
+
+    const totalScheduledHours = shifts.reduce((sum, shift) => {
+      const minutes = Math.max(
+        Math.floor((shift.endTime.getTime() - shift.startTime.getTime()) / (1000 * 60)),
+        0
+      );
+      return sum + minutes / 60;
+    }, 0);
+
+    const byLocation = new Map<
+      string,
+      { locationId: string; locationName: string; locationAddress: string | null; shiftCount: number; openShifts: number; totalHours: number }
+    >();
+
+    for (const shift of shifts) {
+      const locationKey = shift.locationId ?? 'unassigned-location';
+      const current = byLocation.get(locationKey) ?? {
+        locationId: shift.locationId ?? '',
+        locationName: shift.location?.name ?? 'No location assigned',
+        locationAddress: shift.location?.address ?? null,
+        shiftCount: 0,
+        openShifts: 0,
+        totalHours: 0,
+      };
+
+      const hours = Math.max((shift.endTime.getTime() - shift.startTime.getTime()) / (1000 * 60 * 60), 0);
+      current.shiftCount += 1;
+      current.totalHours += hours;
+      if (!shift.employeeId) {
+        current.openShifts += 1;
+      }
+
+      byLocation.set(locationKey, current);
+    }
+
+    return {
+      month: monthStart.toISOString().slice(0, 7),
+      monthLabel: monthStart.toLocaleString('en-US', { month: 'long', year: 'numeric' }),
+      monthStart,
+      monthEndExclusive: monthEnd,
+      orgId: org.id,
+      orgName: org.name,
+      locationId: locationId ?? null,
+      totalShifts,
+      assignedShifts,
+      openShifts,
+      scheduledEmployees,
+      totalScheduledHours,
+      locations: activeLocations,
+      locationBreakdown: Array.from(byLocation.values()).sort((a, b) => b.shiftCount - a.shiftCount),
     };
   },
 

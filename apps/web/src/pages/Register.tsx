@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { registerEmployee, registerOwner } from '../services/authService';
@@ -59,7 +59,7 @@ export const Register = () => {
           organizationName: formData.organizationName,
         });
 
-        login(response.user, response.tokens);
+        login(response.user);
         
         try {
           const org = await getMyOrganization();
@@ -186,7 +186,7 @@ export const Register = () => {
           </button>
 
           <p className="text-center text-xs sm:text-sm text-slate-600">
-            Already have an account? <a href="/login" className="text-blue-600">Sign in</a>
+            Already have an account? <Link to="/login" className="text-blue-600">Sign in</Link>
           </p>
         </form>
       </div>

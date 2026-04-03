@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { format, isToday, startOfDay, endOfDay, addDays } from 'date-fns';
+import { addDays } from 'date-fns';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { Calendar, Clock, MapPin, Briefcase, CalendarPlus, ArrowLeftRight } from 'lucide-react';
 import axios from 'axios';
 import api from '../services/api';
@@ -30,8 +31,13 @@ interface Peer {
   role: string;
 }
 
-const scheduleRangeStart = startOfDay(new Date());
-const scheduleRangeEnd = endOfDay(addDays(new Date(), 30));
+const buildDayRange = (dayKey: string, timezone: string) => ({
+  start: fromZonedTime(`${dayKey}T00:00:00`, timezone),
+  end: fromZonedTime(`${dayKey}T23:59:59.999`, timezone),
+});
+
+const getDayReference = (dayKey: string, timezone: string) =>
+  fromZonedTime(`${dayKey}T12:00:00`, timezone);
 
 const fetchMySchedule = async ({ queryKey }: { queryKey: [string, string, string, string] }): Promise<Shift[]> => {
   const [, , startDate, endDate] = queryKey;
@@ -49,7 +55,7 @@ const fetchPeers = async (): Promise<Peer[]> => {
 export const MySchedule = () => {
   const queryClient = useQueryClient();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [activeDay, setActiveDay] = useState<Date | null>(null);
+  const [activeDay, setActiveDay] = useState<string | null>(null);
   const [isTimeOffModalOpen, setIsTimeOffModalOpen] = useState(false);
   const [isSwapModalOpen, setIsSwapModalOpen] = useState(false);
 
@@ -61,8 +67,30 @@ export const MySchedule = () => {
   const [requestedShiftId, setRequestedShiftId] = useState('');
   const [swapReason, setSwapReason] = useState('');
 
+  const { data: clockStatus } = useQuery({
+    queryKey: queryKeys.timeClock.status(),
+    queryFn: getClockStatus,
+    refetchInterval: 30_000,
+  });
+
+  const timezone = clockStatus?.policy?.timezone || 'America/New_York';
+  const scheduleRange = useMemo(() => {
+    const now = new Date();
+    const startDayKey = formatInTimeZone(now, timezone, 'yyyy-MM-dd');
+    const endDayKey = formatInTimeZone(addDays(now, 30), timezone, 'yyyy-MM-dd');
+    const { start } = buildDayRange(startDayKey, timezone);
+    const { end } = buildDayRange(endDayKey, timezone);
+
+    return {
+      startDayKey,
+      endDayKey,
+      startIso: start.toISOString(),
+      endIso: end.toISOString(),
+    };
+  }, [timezone]);
+
   const { data: shifts = [], isLoading, error } = useQuery({
-    queryKey: queryKeys.schedules.mySchedule(scheduleRangeStart.toISOString(), scheduleRangeEnd.toISOString()) as [
+    queryKey: queryKeys.schedules.mySchedule(scheduleRange.startIso, scheduleRange.endIso) as [
       string,
       string,
       string,
@@ -77,24 +105,19 @@ export const MySchedule = () => {
   });
 
   const { data: peerShifts = [] } = useQuery<Shift[]>({
-    queryKey: ['schedules', 'peer', responderId, activeDay?.toISOString() ?? ''],
+    queryKey: ['schedules', 'peer', responderId, activeDay ?? ''],
     queryFn: async () => {
       if (!activeDay) return [];
+      const { start, end } = buildDayRange(activeDay, timezone);
       const response = await api.get(`/schedules/employee/${responderId}`, {
         params: {
-          startDate: startOfDay(activeDay).toISOString(),
-          endDate: endOfDay(activeDay).toISOString(),
+          startDate: start.toISOString(),
+          endDate: end.toISOString(),
         },
       });
       return response.data;
     },
     enabled: Boolean(responderId && activeDay),
-  });
-
-  const { data: clockStatus } = useQuery({
-    queryKey: queryKeys.timeClock.status(),
-    queryFn: getClockStatus,
-    refetchInterval: 30_000,
   });
 
   const clockInMutation = useMutation({
@@ -129,13 +152,19 @@ export const MySchedule = () => {
   });
 
   const timeOffMutation = useMutation({
-    mutationFn: async () =>
-      api.post('/time-off', {
-        startDate: activeDay ? new Date(activeDay).toISOString() : '',
-        endDate: activeDay ? new Date(activeDay).toISOString() : '',
+    mutationFn: async () => {
+      if (!activeDay) {
+        throw new Error('No day selected');
+      }
+
+      const { start, end } = buildDayRange(activeDay, timezone);
+      return api.post('/time-off', {
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
         type: timeOffType,
         reason: timeOffReason,
-      }),
+      });
+    },
     onSuccess: () => {
       setTimeOffReason('');
       setIsTimeOffModalOpen(false);
@@ -163,30 +192,30 @@ export const MySchedule = () => {
   });
 
   const scheduledDays = useMemo(() => {
-    const unique = new Map<string, Date>();
+    const unique = new Set<string>();
     for (const shift of shifts) {
-      const day = startOfDay(new Date(shift.startTime));
-      if (day < scheduleRangeStart) continue;
-      const key = day.toISOString();
-      if (!unique.has(key)) unique.set(key, day);
+      const dayKey = formatInTimeZone(shift.startTime, timezone, 'yyyy-MM-dd');
+      if (dayKey < scheduleRange.startDayKey || dayKey > scheduleRange.endDayKey) continue;
+      unique.add(dayKey);
     }
-    return Array.from(unique.values()).sort((a, b) => a.getTime() - b.getTime());
-  }, [shifts]);
+    return Array.from(unique).sort();
+  }, [scheduleRange.endDayKey, scheduleRange.startDayKey, shifts, timezone]);
 
-  const getShiftsForDay = (date: Date) =>
-    shifts.filter((shift) => new Date(shift.startTime).toDateString() === date.toDateString());
-
-  const formatTime = (time: string) => format(new Date(time), 'h:mm a');
+  const getDateKey = (value: string | Date) => formatInTimeZone(value, timezone, 'yyyy-MM-dd');
+  const getDayLabel = (dayKey: string, pattern: string) =>
+    formatInTimeZone(getDayReference(dayKey, timezone), timezone, pattern);
+  const getShiftsForDay = (dayKey: string) => shifts.filter((shift) => getDateKey(shift.startTime) === dayKey);
+  const formatTime = (time: string) => formatInTimeZone(time, timezone, 'h:mm a');
   const canSubmitTimeOff = Boolean(activeDay);
   const canSubmitSwap = Boolean(responderId && myShiftId && requestedShiftId && swapReason.trim());
 
-  const openTimeOffModalForDay = (day: Date) => {
-    setActiveDay(day);
+  const openTimeOffModalForDay = (dayKey: string) => {
+    setActiveDay(dayKey);
     setIsTimeOffModalOpen(true);
   };
 
-  const openSwapModalForDay = (day: Date) => {
-    setActiveDay(day);
+  const openSwapModalForDay = (dayKey: string) => {
+    setActiveDay(dayKey);
     setResponderId('');
     setMyShiftId('');
     setRequestedShiftId('');
@@ -195,9 +224,7 @@ export const MySchedule = () => {
   };
 
   const activeDayShifts = activeDay ? getShiftsForDay(activeDay) : [];
-  const activeDayPeerShifts = activeDay
-    ? peerShifts.filter((shift) => new Date(shift.startTime).toDateString() === activeDay.toDateString())
-    : [];
+  const activeDayPeerShifts = activeDay ? peerShifts.filter((shift) => getDateKey(shift.startTime) === activeDay) : [];
 
   if (isLoading) {
     return (
@@ -228,27 +255,46 @@ export const MySchedule = () => {
         </Card>
       ) : (
         <div className="space-y-4">
-          {scheduledDays.map((day) => {
-            const dayShifts = getShiftsForDay(day);
-            const isTodayShift = isToday(day);
+          {clockStatus?.activeEntry && (
+            <Card>
+              <CardContent className="py-4 flex items-center justify-between gap-3">
+                <div className="text-sm text-slate-700">
+                  Active clock-in since{' '}
+                  <span className="font-semibold">{formatTime(clockStatus.activeEntry.clockInAt)}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => clockOutMutation.mutate(undefined)}
+                  isLoading={clockOutMutation.isPending}
+                >
+                  Clock Out
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {scheduledDays.map((dayKey) => {
+            const dayShifts = getShiftsForDay(dayKey);
+            const isTodayShift = dayKey === scheduleRange.startDayKey;
             const eligibleShift = clockStatus?.eligibleShift;
             const eligibleShiftIsForDay =
-              Boolean(eligibleShift) && new Date(eligibleShift!.startTime).toDateString() === day.toDateString();
+              Boolean(eligibleShift) && getDateKey(eligibleShift!.startTime) === dayKey;
 
             const activeEntry = clockStatus?.activeEntry;
             const activeEntryDaySource = activeEntry?.shift?.startTime || activeEntry?.clockInAt;
             const activeEntryIsForDay =
               Boolean(activeEntryDaySource) &&
-              new Date(activeEntryDaySource).toDateString() === day.toDateString();
+              getDateKey(activeEntryDaySource) === dayKey;
             const canClockForDay = isTodayShift && !clockStatus?.activeEntry;
 
             return (
-              <Card key={day.toISOString()}>
+              <Card key={dayKey}>
                 <CardHeader>
                   <div className="flex items-center justify-between gap-3">
                     <CardTitle className={`flex items-center gap-2 ${isTodayShift ? 'text-blue-700' : ''}`}>
                       <Calendar className="w-5 h-5" />
-                      {format(day, 'EEEE, PP, yyyy')}
+                      {getDayLabel(dayKey, 'EEEE, PP, yyyy')}
                       {isTodayShift && (
                         <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-semibold">
                           Today
@@ -260,7 +306,7 @@ export const MySchedule = () => {
                         size="sm"
                         variant="outline"
                         className="!p-2"
-                        onClick={() => openTimeOffModalForDay(day)}
+                        onClick={() => openTimeOffModalForDay(dayKey)}
                         title="Request time off"
                       >
                         <CalendarPlus className="w-4 h-4" />
@@ -269,7 +315,7 @@ export const MySchedule = () => {
                         size="sm"
                         variant="outline"
                         className="!p-2"
-                        onClick={() => openSwapModalForDay(day)}
+                        onClick={() => openSwapModalForDay(dayKey)}
                         title="Request shift swap"
                       >
                         <ArrowLeftRight className="w-4 h-4" />
@@ -315,7 +361,7 @@ export const MySchedule = () => {
                             {activeEntryIsForDay && activeEntry?.shiftId === shift.id
                               ? 'Currently clocked in'
                               : eligibleShiftIsForDay && eligibleShift?.id === shift.id && !eligibleShift.canClockIn && clockStatus?.earliestClockInAt
-                              ? `Clock in at ${format(new Date(clockStatus.earliestClockInAt), 'h:mm a')}`
+                              ? `Clock in at ${formatTime(clockStatus.earliestClockInAt)}`
                               : !isTodayShift
                               ? 'Clock-in available on shift day'
                               : 'Scheduled shift'}
@@ -333,16 +379,24 @@ export const MySchedule = () => {
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() =>
-                                eligibleShiftIsForDay && eligibleShift?.id === shift.id && eligibleShift.canClockIn
-                                  ? clockInMutation.mutate({ shiftId: shift.id })
-                                  : clockInMutation.mutate({ force: true })
-                              }
+                              onClick={() => {
+                                if (eligibleShiftIsForDay && eligibleShift?.id === shift.id && eligibleShift.canClockIn) {
+                                  clockInMutation.mutate({ shiftId: shift.id });
+                                  return;
+                                }
+                                if (eligibleShiftIsForDay && eligibleShift?.id === shift.id && !eligibleShift.canClockIn) {
+                                  setErrorMessage(
+                                    clockStatus?.earliestClockInAt
+                                      ? `Too early to clock in. Earliest allowed clock-in is ${formatTime(clockStatus.earliestClockInAt)}`
+                                      : 'Too early to clock in.'
+                                  );
+                                  return;
+                                }
+                                setErrorMessage('Clock-in is only available for an eligible shift time window.');
+                              }}
                               isLoading={clockInMutation.isPending}
                             >
-                              {eligibleShiftIsForDay && eligibleShift?.id === shift.id && eligibleShift.canClockIn
-                                ? 'Clock In'
-                                : 'Clock In Now'}
+                              Clock In
                             </Button>
                           ) : null}
                         </div>
@@ -359,7 +413,7 @@ export const MySchedule = () => {
       <Modal
         isOpen={isTimeOffModalOpen}
         onClose={() => setIsTimeOffModalOpen(false)}
-        title={`Request Time Off${activeDay ? ` - ${format(activeDay, 'EEE, MMM d')}` : ''}`}
+        title={`Request Time Off${activeDay ? ` - ${getDayLabel(activeDay, 'EEE, MMM d')}` : ''}`}
         action={
           <>
             <Button variant="outline" onClick={() => setIsTimeOffModalOpen(false)}>
@@ -387,7 +441,8 @@ export const MySchedule = () => {
           />
           {activeDay && (
             <div className="text-sm text-slate-600">
-              Requesting day off for <span className="font-semibold text-slate-900">{format(activeDay, 'EEEE, MMM d, yyyy')}</span>.
+              Requesting day off for{' '}
+              <span className="font-semibold text-slate-900">{getDayLabel(activeDay, 'EEEE, MMM d, yyyy')}</span>.
             </div>
           )}
           <Input
@@ -404,7 +459,7 @@ export const MySchedule = () => {
       <Modal
         isOpen={isSwapModalOpen}
         onClose={() => setIsSwapModalOpen(false)}
-        title={`Request Shift Swap${activeDay ? ` - ${format(activeDay, 'EEE, MMM d')}` : ''}`}
+        title={`Request Shift Swap${activeDay ? ` - ${getDayLabel(activeDay, 'EEE, MMM d')}` : ''}`}
         action={
           <>
             <Button variant="outline" onClick={() => setIsSwapModalOpen(false)}>
@@ -428,7 +483,7 @@ export const MySchedule = () => {
               { value: '', label: 'Select your shift for this day' },
               ...activeDayShifts.map((shift) => ({
                 value: shift.id,
-                label: `${format(new Date(shift.startTime), 'h:mm a')} - ${format(new Date(shift.endTime), 'h:mm a')}`,
+                label: `${formatTime(shift.startTime)} - ${formatTime(shift.endTime)}`,
               })),
             ]}
           />
@@ -450,7 +505,7 @@ export const MySchedule = () => {
               { value: '', label: responderId ? 'Select coworker shift for this day' : 'Pick coworker first' },
               ...activeDayPeerShifts.map((shift) => ({
                 value: shift.id,
-                label: `${format(new Date(shift.startTime), 'h:mm a')} - ${format(new Date(shift.endTime), 'h:mm a')}`,
+                label: `${formatTime(shift.startTime)} - ${formatTime(shift.endTime)}`,
               })),
             ]}
           />

@@ -27,8 +27,6 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
     } catch (error) {
       console.error('Logout request failed, continuing with local logout.', error);
     } finally {
-      localStorage.removeItem('tokens');
-      localStorage.removeItem('refreshToken');
       logoutStore();
       setIsLoggingOut(false);
       navigate('/login', { replace: true });
@@ -48,29 +46,30 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
         </button>
       </div>
 
-      <div className="flex items-center space-x-2 sm:space-x-4 overflow-x-auto">
-        <div className="relative">
+      <div className="flex min-w-0 items-center space-x-2 sm:space-x-4">
+        <div className="relative shrink-0">
           <button
             onClick={() => setIsNotificationOpen(true)}
-            className="relative p-2 text-slate-600 hover:bg-slate-100 rounded-full"
+            className="relative rounded-full p-2 text-slate-600 hover:bg-slate-100"
+            aria-label="Open notifications"
           >
             <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
             </svg>
             {unreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs text-white">
+              <span className="absolute -right-1 -top-1 z-10 flex min-h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-red-500 px-1 text-[10px] font-semibold leading-none text-white shadow-sm">
                 {unreadCount}
               </span>
             )}
           </button>
         </div>
-        <div className="relative">
+        <div className="relative min-w-0">
           <button
             onClick={handleLogout}
             disabled={isLoggingOut}
-            className="flex items-center space-x-2 text-slate-600 hover:bg-slate-100 rounded-lg p-2"
+            className="flex min-w-0 items-center space-x-2 rounded-lg p-2 text-slate-600 hover:bg-slate-100"
           >
-            <span className="text-sm font-medium">
+            <span className="truncate text-sm font-medium">
               {isLoggingOut ? 'Logging out...' : `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || 'Logout'}
             </span>
             <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

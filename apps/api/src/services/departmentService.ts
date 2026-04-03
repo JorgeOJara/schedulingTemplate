@@ -23,7 +23,7 @@ export const DepartmentService = {
   async getDepartment(id: string) {
     return await prisma.department.findUnique({
       where: { id },
-      include: { shifts: true, shiftTemplates: true },
+      include: { shifts: true, defaultShiftTemplates: true },
     });
   },
 

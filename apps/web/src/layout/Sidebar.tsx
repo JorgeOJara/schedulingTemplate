@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { useLocation } from 'react-router';
+import { NavLink, useLocation } from 'react-router';
 import { useAuthStore } from '../store/authStore';
 import { getMyOrganization } from '../services/organizationService';
 
@@ -114,15 +114,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           {menuItems.map((item) => {
             const isActive = location.pathname === item.path;
             return (
-              <a
+              <NavLink
                 key={item.path}
-                href={item.path}
+                to={item.path}
                 className={getMenuItemClass(item.path)}
+                onClick={onClose}
               >
                 <span className="mr-3 h-5 w-5 flex-shrink-0 text-current">{item.icon}</span>
                 <span className="truncate flex-1 font-medium">{item.label}</span>
                 {isActive && <span className="ml-auto h-2 w-2 rounded-full bg-white/50" />}
-              </a>
+              </NavLink>
             );
           })}
         </nav>

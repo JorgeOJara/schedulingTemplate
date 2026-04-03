@@ -20,6 +20,20 @@ export interface DefaultShiftTemplate {
   active?: boolean;
 }
 
+export interface SetupLocation {
+  id: string;
+  name: string;
+  address?: string | null;
+  phone?: string | null;
+  active: boolean;
+}
+
+export interface LocationBusinessHours {
+  locationId: string;
+  locationName: string;
+  hours: BusinessHour[];
+}
+
 export interface OrgSetup {
   id: string;
   name: string;
@@ -31,7 +45,9 @@ export interface OrgSetup {
   dailyOtcThreshold: number;
   weeklyOtcThreshold: number;
   maxHoursPerWeek: number;
+  locations?: SetupLocation[];
   businessHours: BusinessHour[];
+  locationBusinessHours?: LocationBusinessHours[];
   defaultShiftTemplates: DefaultShiftTemplate[];
 }
 
@@ -48,7 +64,11 @@ export const saveOrgSetup = async (payload: {
   maxHoursPerWeek?: number;
   schedulingMode?: 'PASSIVE' | 'PROACTIVE';
   aiAutoScheduleEnabled?: boolean;
-  businessHours: BusinessHour[];
+  businessHours?: BusinessHour[];
+  locationBusinessHours?: Array<{
+    locationId: string;
+    hours: BusinessHour[];
+  }>;
   defaultShiftTemplates: DefaultShiftTemplate[];
 }) => {
   const response = await api.put('/setup/org', payload);

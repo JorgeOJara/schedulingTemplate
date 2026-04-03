@@ -21,6 +21,17 @@ router.get('/me', async (req: AuthRequest, res) => {
   }
 });
 
+// GET /api/v1/organizations/businesses
+router.get('/businesses', async (req: AuthRequest, res) => {
+  try {
+    const businesses = await OrgService.getAccessibleBusinesses(req.user!.orgId);
+    res.status(200).json(businesses);
+  } catch (error) {
+    console.error('Get accessible businesses error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // PUT /api/v1/organizations/me
 router.put('/me', async (req: AuthRequest, res) => {
   try {

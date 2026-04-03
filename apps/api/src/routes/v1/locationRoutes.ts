@@ -17,9 +17,9 @@ router.get('/', async (req: AuthRequest, res) => {
 });
 
 // GET /api/v1/locations/:id
-router.get('/:id', async (req, res) => {
+router.get('/:id', async (req: AuthRequest, res) => {
   try {
-    const location = await LocationService.getLocation(req.params.id);
+    const location = await LocationService.getLocation(req.user!.orgId, String(req.params.id));
     
     if (!location) {
       return res.status(404).json({ error: 'Location not found' });
@@ -50,10 +50,11 @@ router.post('/', async (req: AuthRequest, res) => {
 });
 
 // PUT /api/v1/locations/:id
-router.put('/:id', async (req, res) => {
+router.put('/:id', async (req: AuthRequest, res) => {
   try {
     const location = await LocationService.updateLocation(
-      req.params.id,
+      req.user!.orgId,
+      String(req.params.id),
       req.body.name,
       req.body.address,
       req.body.phone,
@@ -68,9 +69,9 @@ router.put('/:id', async (req, res) => {
 });
 
 // DELETE /api/v1/locations/:id
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', async (req: AuthRequest, res) => {
   try {
-    await LocationService.deleteLocation(req.params.id);
+    await LocationService.deleteLocation(req.user!.orgId, String(req.params.id));
     
     res.status(204).send();
   } catch (error) {

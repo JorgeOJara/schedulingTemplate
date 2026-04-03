@@ -38,17 +38,6 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({ isOpen, on
     }
   };
 
-  const markAsRead = async (id: string) => {
-    try {
-      await api.patch(`/notifications/${id}/read`);
-      setNotifications(prev => 
-        prev.map(n => n.id === id ? { ...n, isRead: true } : n)
-      );
-    } catch (error) {
-      console.error('Failed to mark as read:', error);
-    }
-  };
-
   const markAllAsRead = async () => {
     try {
       await api.patch('/notifications/read-all');

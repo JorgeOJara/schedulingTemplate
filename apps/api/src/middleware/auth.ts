@@ -1,9 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { PrismaClient } from '@prisma/client';
 import { logger } from '../config/logger.js';
-
-const prisma = new PrismaClient();
+import { verifyAccessToken } from '../utils/authTokens.js';
 
 export interface AuthRequest extends Request {
   user?: {
@@ -20,28 +17,27 @@ export const authMiddleware = async (
 ): Promise<void> => {
   try {
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader?.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
 
     const token = authHeader.substring(7);
-    
-    jwt.verify(token, process.env.JWT_SECRET!, (err, decoded) => {
-      if (err) {
-        res.status(401).json({ error: 'Invalid or expired token' });
-        return;
-      }
+    const payload = verifyAccessToken(token);
 
-      const payload = decoded as { userId: string; orgId: string; role: string };
-      req.user = {
-        id: payload.userId,
-        orgId: payload.orgId,
-        role: payload.role,
-      };
-      next();
-    });
+    if (!payload) {
+      res.status(401).json({ error: 'Invalid or expired token' });
+      return;
+    }
+
+    req.user = {
+      id: payload.userId,
+      orgId: payload.orgId,
+      role: payload.role,
+    };
+
+    next();
   } catch (error) {
     logger.error('Auth middleware error:', error);
     res.status(401).json({ error: 'Authentication required' });

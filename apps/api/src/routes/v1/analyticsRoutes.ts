@@ -10,11 +10,24 @@ const router = Router();
 router.get('/weekly-summary', rbacMiddleware(['ADMIN', 'MANAGER']), async (req: AuthRequest, res) => {
   try {
     const weekId = req.query.weekId ? z.string().uuid().parse(String(req.query.weekId)) : undefined;
-    const summary = await AnalyticsService.getWeeklySummary(req.user!.orgId, weekId);
+    const locationId = req.query.locationId ? z.string().uuid().parse(String(req.query.locationId)) : undefined;
+    const summary = await AnalyticsService.getWeeklySummary(req.user!.orgId, weekId, locationId);
     
     res.status(200).json(summary);
   } catch (error) {
     console.error('Get weekly summary error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/v1/analytics/monthly-report
+router.get('/monthly-report', rbacMiddleware(['ADMIN', 'MANAGER']), async (req: AuthRequest, res) => {
+  try {
+    const locationId = req.query.locationId ? z.string().uuid().parse(String(req.query.locationId)) : undefined;
+    const report = await AnalyticsService.getCurrentMonthReport(req.user!.orgId, locationId);
+    res.status(200).json(report);
+  } catch (error) {
+    console.error('Get monthly report error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

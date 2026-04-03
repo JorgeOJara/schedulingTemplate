@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Users, X } from 'lucide-react';
+import { X } from 'lucide-react';
 
 interface Employee {
   id: string;

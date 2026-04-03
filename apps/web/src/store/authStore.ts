@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 
 interface User {
   id: string;
@@ -7,42 +6,36 @@ interface User {
   firstName: string;
   lastName: string;
   role: string;
-  orgId?: string;
+  orgId: string;
   orgName?: string;
 }
 
 interface AuthState {
   user: User | null;
-  tokens: {
-    accessToken: string;
-    refreshToken: string;
-  } | null;
   isAuthenticated: boolean;
-  login: (user: User, tokens: AuthState['tokens']) => void;
+  isBootstrapping: boolean;
+  login: (user: User) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
+  finishBootstrap: () => void;
 }
 
-export const useAuthStore = create<AuthState>()(
-  persist(
-    (set) => ({
-      user: null,
-      tokens: null,
-      isAuthenticated: false,
-      login: (user, tokens) => {
-        set({ user, tokens, isAuthenticated: true });
-      },
-      logout: () => {
-        set({ user: null, tokens: null, isAuthenticated: false });
-      },
-      updateUser: (user) => {
-        set((state) => ({
-          user: state.user ? { ...state.user, ...user } : null,
-        }));
-      },
-    }),
-    {
-      name: 'auth-storage',
-    }
-  )
-);
+export const useAuthStore = create<AuthState>()((set) => ({
+  user: null,
+  isAuthenticated: false,
+  isBootstrapping: true,
+  login: (user) => {
+    set({ user, isAuthenticated: true });
+  },
+  logout: () => {
+    set({ user: null, isAuthenticated: false, isBootstrapping: false });
+  },
+  updateUser: (user) => {
+    set((state) => ({
+      user: state.user ? { ...state.user, ...user } : null,
+    }));
+  },
+  finishBootstrap: () => {
+    set({ isBootstrapping: false });
+  },
+}));

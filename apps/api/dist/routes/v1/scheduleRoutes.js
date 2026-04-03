@@ -1,0 +1,139 @@
+import { Router } from 'express';
+import { PrismaClient } from '@prisma/client';
+import { ScheduleService } from '../../services/scheduleService.js';
+const router = Router();
+const prisma = new PrismaClient();
+// GET /api/v1/schedules/week
+router.get('/week', async (req, res) => {
+    try {
+        const weeks = await ScheduleService.getScheduleWeeks(req.user.orgId);
+        res.status(200).json(weeks);
+    }
+    catch (error) {
+        console.error('Get schedule weeks error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// GET /api/v1/schedules/week/:id
+router.get('/week/:id', async (req, res) => {
+    try {
+        const weekId = String(req.params.id);
+        const week = await ScheduleService.getScheduleWeek(weekId, req.user.orgId);
+        if (!week) {
+            return res.status(404).json({ error: 'Schedule week not found' });
+        }
+        res.status(200).json(week);
+    }
+    catch (error) {
+        console.error('Get schedule week error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// POST /api/v1/schedules/week
+router.post('/week', async (req, res) => {
+    try {
+        const week = await ScheduleService.createScheduleWeek(req.user.orgId, req.body.startDate, req.body.endDate);
+        res.status(201).json(week);
+    }
+    catch (error) {
+        console.error('Create schedule week error:', error);
+        res.status(400).json({ error: error.message });
+    }
+});
+// POST /api/v1/schedules/week/ensure
+router.post('/week/ensure', async (req, res) => {
+    try {
+        const weeksAhead = Number(req.body?.weeksAhead ?? 1);
+        const result = await ScheduleService.ensurePlanningWeeks(req.user.orgId, weeksAhead);
+        res.status(200).json(result);
+    }
+    catch (error) {
+        console.error('Ensure schedule weeks error:', error);
+        res.status(400).json({ error: error.message || 'Unable to prepare future weeks' });
+    }
+});
+// PUT /api/v1/schedules/week/:id/publish
+router.put('/week/:id/publish', async (req, res) => {
+    try {
+        const weekId = String(req.params.id);
+        const week = await ScheduleService.publishSchedule(weekId, req.user.orgId, req.user.id);
+        res.status(200).json(week);
+    }
+    catch (error) {
+        console.error('Publish schedule error:', error);
+        res.status(400).json({ error: error.message });
+    }
+});
+// PUT /api/v1/schedules/week/:id/unpublish
+router.put('/week/:id/unpublish', async (req, res) => {
+    try {
+        const weekId = String(req.params.id);
+        const week = await ScheduleService.unpublishSchedule(weekId, req.user.orgId, req.user.id);
+        res.status(200).json(week);
+    }
+    catch (error) {
+        console.error('Unpublish schedule error:', error);
+        res.status(400).json({ error: error.message });
+    }
+});
+// DELETE /api/v1/schedules/week/:id
+router.delete('/week/:id', async (req, res) => {
+    try {
+        const weekId = String(req.params.id);
+        await ScheduleService.deleteScheduleWeek(weekId, req.user.orgId);
+        res.status(204).send();
+    }
+    catch (error) {
+        console.error('Delete schedule week error:', error);
+        res.status(400).json({ error: error.message });
+    }
+});
+// GET /api/v1/schedules/weekly-summary
+router.get('/weekly-summary', async (req, res) => {
+    try {
+        const summary = await ScheduleService.getWeeklySummary(req.user.orgId, req.query.weekId);
+        res.status(200).json(summary);
+    }
+    catch (error) {
+        console.error('Get weekly summary error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// GET /api/v1/schedules/my-schedule
+router.get('/my-schedule', async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const shifts = await ScheduleService.getEmployeeSchedule(req.user.orgId, req.user.id, String(startDate), String(endDate));
+        res.status(200).json(shifts);
+    }
+    catch (error) {
+        console.error('Get my schedule error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// GET /api/v1/schedules/employee/:employeeId
+router.get('/employee/:employeeId', async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const employeeId = String(req.params.employeeId);
+        const employee = await prisma.user.findFirst({
+            where: { id: employeeId, orgId: req.user.orgId, isActive: true },
+            select: { id: true, role: true },
+        });
+        if (!employee) {
+            return res.status(404).json({ error: 'Employee not found' });
+        }
+        const currentUserRole = req.user.role;
+        const canView = ['ADMIN', 'MANAGER'].includes(currentUserRole) || employee.role === currentUserRole;
+        if (!canView) {
+            return res.status(403).json({ error: 'Can only view schedules for users in your role group' });
+        }
+        const shifts = await ScheduleService.getEmployeeSchedule(req.user.orgId, employeeId, String(startDate), String(endDate));
+        res.status(200).json(shifts);
+    }
+    catch (error) {
+        console.error('Get employee schedule error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+export default router;

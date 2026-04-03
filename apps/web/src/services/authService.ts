@@ -1,4 +1,8 @@
-import api from './api';
+import api, {
+  applyAuthSession,
+  clearAccessToken,
+  initializeSession as initializeApiSession,
+} from './api';
 
 export interface LoginCredentials {
   email: string;
@@ -15,10 +19,7 @@ export interface AuthResponse {
     orgId: string;
     orgName?: string;
   };
-  tokens: {
-    accessToken: string;
-    refreshToken: string;
-  };
+  accessToken: string;
 }
 
 export interface OwnerRegisterInput {
@@ -39,22 +40,18 @@ export interface EmployeeRegisterInput {
 
 export const login = async (credentials: LoginCredentials): Promise<AuthResponse> => {
   const response = await api.post('/auth/login', credentials);
-  localStorage.setItem('tokens', JSON.stringify(response.data.tokens));
-  localStorage.setItem('refreshToken', response.data.tokens.refreshToken);
+  applyAuthSession(response.data);
   return response.data;
 };
 
 export const register = async (data: any): Promise<AuthResponse> => {
   const response = await api.post('/auth/register', data);
-  localStorage.setItem('tokens', JSON.stringify(response.data.tokens));
-  localStorage.setItem('refreshToken', response.data.tokens.refreshToken);
   return response.data;
 };
 
 export const registerOwner = async (data: OwnerRegisterInput): Promise<AuthResponse> => {
   const response = await api.post('/auth/register-owner', data);
-  localStorage.setItem('tokens', JSON.stringify(response.data.tokens));
-  localStorage.setItem('refreshToken', response.data.tokens.refreshToken);
+  applyAuthSession(response.data);
   return response.data;
 };
 
@@ -75,8 +72,7 @@ export const reviewPendingEmployee = async (userId: string, decision: 'APPROVE' 
 
 export const acceptInvite = async (token: string, password: string): Promise<AuthResponse> => {
   const response = await api.post('/auth/accept-invite', { token, password });
-  localStorage.setItem('tokens', JSON.stringify(response.data.tokens));
-  localStorage.setItem('refreshToken', response.data.tokens.refreshToken);
+  applyAuthSession(response.data);
   return response.data;
 };
 
@@ -90,6 +86,9 @@ export const resetPassword = async (token: string, password: string): Promise<vo
 
 export const logout = async (): Promise<void> => {
   await api.post('/auth/logout');
-  localStorage.removeItem('tokens');
-  localStorage.removeItem('refreshToken');
+  clearAccessToken();
+};
+
+export const initializeSession = async (): Promise<AuthResponse | null> => {
+  return await initializeApiSession();
 };

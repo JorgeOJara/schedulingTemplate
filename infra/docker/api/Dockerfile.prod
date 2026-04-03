@@ -1,0 +1,22 @@
+FROM oven/bun:1.1.38-alpine
+
+WORKDIR /app
+
+RUN apk add --no-cache nodejs npm
+
+COPY apps/api/package.json ./package.json
+COPY apps/api/tsconfig.json ./tsconfig.json
+COPY apps/api/prisma ./prisma
+
+RUN bun install
+
+COPY apps/api/src ./src
+
+RUN bunx prisma generate && bun run build
+
+ENV NODE_ENV=production
+ENV PORT=3000
+
+EXPOSE 3000
+
+CMD ["sh", "-lc", "bunx prisma db push --accept-data-loss && node dist/server.js"]

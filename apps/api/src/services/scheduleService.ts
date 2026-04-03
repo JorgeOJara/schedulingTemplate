@@ -17,6 +17,26 @@ const buildWeekBounds = (timezone: string, offsetWeeks = 0) => {
   return { start, end };
 };
 
+const getWeeksAheadForRangeEnd = (timezone: string, endDate: string) => {
+  const requestedEnd = DateTime.fromJSDate(new Date(endDate), { zone: timezone });
+  if (!requestedEnd.isValid) {
+    return 0;
+  }
+
+  const { start: currentWeekStart } = buildWeekBounds(timezone, 0);
+  const dayOffset = Math.floor(requestedEnd.startOf('day').diff(currentWeekStart, 'days').days);
+  return Math.max(0, Math.floor(dayOffset / 7));
+};
+
+const fetchScheduleWeeks = (orgId: string) =>
+  prisma.scheduleWeek.findMany({
+    where: { orgId },
+    orderBy: { startDate: 'desc' },
+  });
+
+const getWeekStartKey = (value: Date, timezone: string) =>
+  DateTime.fromJSDate(value, { zone: timezone }).toISODate()!;
+
 export const ScheduleService = {
   async createScheduleWeek(orgId: string, startDate: string, endDate: string) {
     const start = DateTime.fromISO(startDate);
@@ -164,10 +184,16 @@ export const ScheduleService = {
   },
 
   async getScheduleWeeks(orgId: string) {
-    return await prisma.scheduleWeek.findMany({
-      where: { orgId },
-      orderBy: { startDate: 'desc' },
+    const org = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { schedulingMode: true },
     });
+
+    if (normalizeMode(org?.schedulingMode) === 'PASSIVE') {
+      await this.ensurePlanningWeeks(orgId, 0);
+    }
+
+    return await fetchScheduleWeeks(orgId);
   },
 
   async ensurePlanningWeeks(orgId: string, weeksAheadRaw: number) {
@@ -205,9 +231,13 @@ export const ScheduleService = {
       byStartIso.set(key, week);
     });
 
-    let previousWeek = existingWeeks.find((week) =>
-      DateTime.fromJSDate(week.startDate, { zone: timezone }).hasSame(currentStart, 'day')
-    ) ?? null;
+    const previousStart = currentStart.minus({ weeks: 1 }).toISODate();
+    let previousWeek =
+      existingWeeks.find((week) => getWeekStartKey(week.startDate, timezone) === previousStart) ??
+      existingWeeks
+        .filter((week) => DateTime.fromJSDate(week.startDate, { zone: timezone }) < currentStart)
+        .sort((a, b) => b.startDate.getTime() - a.startDate.getTime())[0] ??
+      null;
 
     for (const weekStart of targetStarts) {
       const weekEnd = weekStart.plus({ days: 7 });
@@ -227,21 +257,19 @@ export const ScheduleService = {
       }
 
       const existingShiftCount = await prisma.shift.count({ where: { scheduleWeekId: week.id } });
-      if (existingShiftCount === 0) {
-        if (previousWeek) {
-          const seededCount = await this.seedWeekFromPreviousWeek(previousWeek.id, week.id, timezone, mode);
-          if (seededCount === 0) {
-            await this.seedWeekFromDefaultTemplates(orgId, week.id, timezone);
-          }
-        } else {
+      if (previousWeek) {
+        const seededCount = await this.seedWeekFromPreviousWeek(previousWeek.id, week.id, timezone, mode);
+        if (existingShiftCount === 0 && seededCount === 0) {
           await this.seedWeekFromDefaultTemplates(orgId, week.id, timezone);
         }
+      } else if (existingShiftCount === 0) {
+        await this.seedWeekFromDefaultTemplates(orgId, week.id, timezone);
       }
 
       previousWeek = week;
     }
 
-    const weeks = await this.getScheduleWeeks(orgId);
+    const weeks = await fetchScheduleWeeks(orgId);
     return { createdWeeks, weeks, schedulingMode: mode };
   },
 
@@ -251,13 +279,78 @@ export const ScheduleService = {
     timezone: string,
     mode: SchedulingMode
   ) {
-    const sourceShifts = await prisma.shift.findMany({ where: { scheduleWeekId: sourceWeekId } });
-    if (sourceShifts.length === 0) {
+    const [sourceWeek, targetWeek, sourceShifts, targetShifts] = await Promise.all([
+      prisma.scheduleWeek.findUnique({ where: { id: sourceWeekId } }),
+      prisma.scheduleWeek.findUnique({ where: { id: targetWeekId } }),
+      prisma.shift.findMany({ where: { scheduleWeekId: sourceWeekId } }),
+      prisma.shift.findMany({ where: { scheduleWeekId: targetWeekId } }),
+    ]);
+
+    if (!sourceWeek || !targetWeek || sourceShifts.length === 0) {
       return 0;
     }
 
-    const targetShifts = await prisma.shift.count({ where: { scheduleWeekId: targetWeekId } });
-    if (targetShifts > 0) {
+    if (targetShifts.length > 0) {
+      // If proactive mode already created the week with empty slots, passive mode should
+      // backfill the people assignments without overwriting manual edits.
+      if (mode !== 'PASSIVE' || targetShifts.some((shift) => shift.employeeId)) {
+        return 0;
+      }
+
+      const sourceWeekStart = DateTime.fromJSDate(sourceWeek.startDate, { zone: timezone }).startOf('day');
+      const targetWeekStart = DateTime.fromJSDate(targetWeek.startDate, { zone: timezone }).startOf('day');
+      const targetsByKey = new Map<string, typeof targetShifts>();
+
+      const buildCarryoverKey = (
+        shift: { startTime: Date; endTime: Date; departmentId: string | null; locationId: string | null; shiftGroup: string | null },
+        weekStart: DateTime
+      ) => {
+        const start = DateTime.fromJSDate(shift.startTime, { zone: timezone });
+        const end = DateTime.fromJSDate(shift.endTime, { zone: timezone });
+        return [
+          Math.round(start.startOf('day').diff(weekStart, 'days').days),
+          start.toFormat('HH:mm'),
+          Math.round(end.startOf('day').diff(weekStart, 'days').days),
+          end.toFormat('HH:mm'),
+          shift.departmentId ?? '',
+          shift.locationId ?? '',
+          shift.shiftGroup ?? '',
+        ].join('|');
+      };
+
+      targetShifts
+        .filter((shift) => !shift.employeeId)
+        .forEach((shift) => {
+          const key = buildCarryoverKey(shift, targetWeekStart);
+          const bucket = targetsByKey.get(key) ?? [];
+          bucket.push(shift);
+          targetsByKey.set(key, bucket);
+        });
+
+      const updates = sourceShifts
+        .filter((shift) => shift.employeeId)
+        .flatMap((shift) => {
+          const key = buildCarryoverKey(shift, sourceWeekStart);
+          const match = targetsByKey.get(key)?.shift();
+          if (!match) return [];
+          return [{ id: match.id, employeeId: shift.employeeId! }];
+        });
+
+      if (updates.length > 0) {
+        await prisma.$transaction(
+          updates.map((update) =>
+            prisma.shift.update({
+              where: { id: update.id },
+              data: { employeeId: update.employeeId },
+            })
+          )
+        );
+      }
+
+      return updates.length;
+    }
+
+    if (targetWeekId === sourceWeekId) {
       return 0;
     }
 
@@ -351,20 +444,23 @@ export const ScheduleService = {
   },
 
   async getEmployeeSchedule(orgId: string, userId: string, startDate: string, endDate: string) {
-    const scheduleWeeks = await prisma.scheduleWeek.findMany({
-      where: { orgId },
+    const org = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { schedulingMode: true, timezone: true },
     });
 
-    const weekIds = scheduleWeeks.map(w => w.id);
+    const timezone = org?.timezone || 'America/New_York';
+
+    if (normalizeMode(org?.schedulingMode) === 'PASSIVE') {
+      await this.ensurePlanningWeeks(orgId, getWeeksAheadForRangeEnd(timezone, endDate));
+    }
 
     return await prisma.shift.findMany({
       where: {
         employeeId: userId,
-        scheduleWeekId: { in: weekIds },
-        OR: [
-          { startTime: { gte: new Date(startDate), lte: new Date(endDate) } },
-          { endTime: { gte: new Date(startDate), lte: new Date(endDate) } },
-        ],
+        scheduleWeek: { orgId },
+        startTime: { lte: new Date(endDate) },
+        endTime: { gte: new Date(startDate) },
       },
       include: {
         department: true,

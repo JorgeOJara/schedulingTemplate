@@ -66,13 +66,13 @@ router.patch('/me/reactivate', async (req: AuthRequest, res) => {
 // GET /api/v1/users/:userId/profile
 router.get('/:userId/profile', async (req, res) => {
   try {
-    const profile = await UserService.getProfile(req.params.userId);
+    const user = await UserService.getUserById(String(req.params.userId));
     
-    if (!profile) {
+    if (!user) {
       return res.status(404).json({ error: 'Profile not found' });
     }
 
-    res.status(200).json(profile);
+    res.status(200).json(user.employeeProfile ?? null);
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ error: 'Internal server error' });

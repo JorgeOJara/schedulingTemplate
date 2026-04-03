@@ -10,8 +10,7 @@ import { getOrgWeeklyHoursComparison } from '../services/timeClockService';
 import {
   LineChart,
   Line,
-  BarChart,
-  Bar,
+
   PieChart,
   Pie,
   Cell,
@@ -44,10 +43,6 @@ interface ScheduleWeek {
   state: string;
 }
 
-interface DepartmentData {
-  name: string;
-  value: number;
-}
 
 interface TimeSeriesData {
   name: string;
@@ -120,12 +115,6 @@ export const Dashboard = () => {
   const pendingCount = (summary?.pendingTimeOff ?? 0) + (summary?.pendingSwaps ?? 0);
   const assignedShifts = Math.max((summary?.totalShifts ?? 0) - (summary?.openShifts ?? 0), 0);
 
-  const deptData: DepartmentData[] = summary?.departmentShifts
-    ? Object.entries(summary.departmentShifts).map(([dept, count]) => ({
-        name: `Dept ${dept.slice(0, 8)}...`,
-        value: count,
-      }))
-    : [];
 
   const timeSeriesData: TimeSeriesData[] = useMemo(
     () => [
@@ -320,24 +309,6 @@ export const Dashboard = () => {
         </Card>
       </div>
 
-      {deptData.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg sm:text-xl">Department Breakdown</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-40 sm:h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={deptData}>
-                  <Bar dataKey="value" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                  <Tooltip />
-                  <Legend />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       <Card>
         <CardHeader>

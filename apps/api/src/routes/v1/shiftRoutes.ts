@@ -7,7 +7,7 @@ const router = Router();
 // GET /api/v1/shifts/:id
 router.get('/:id', async (req: AuthRequest, res) => {
   try {
-    const shift = await ShiftService.getShift(req.params.id, req.user!.orgId);
+    const shift = await ShiftService.getShift(String(req.params.id), req.user!.orgId);
     
     if (!shift) {
       return res.status(404).json({ error: 'Shift not found' });
@@ -59,7 +59,7 @@ router.post('/', async (req: AuthRequest, res) => {
 // PUT /api/v1/shifts/:id
 router.put('/:id', async (req: AuthRequest, res) => {
   try {
-    const shift = await ShiftService.updateShift(req.params.id, req.user!.orgId, req.body);
+    const shift = await ShiftService.updateShift(String(req.params.id), req.user!.orgId, req.body);
     
     res.status(200).json(shift);
   } catch (error: any) {
@@ -73,7 +73,7 @@ router.put('/:id', async (req: AuthRequest, res) => {
 // DELETE /api/v1/shifts/:id
 router.delete('/:id', async (req: AuthRequest, res) => {
   try {
-    await ShiftService.deleteShift(req.params.id, req.user!.orgId);
+    await ShiftService.deleteShift(String(req.params.id), req.user!.orgId);
     
     res.status(204).send();
   } catch (error) {

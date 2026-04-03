@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { useParams } from 'react-router';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -43,9 +43,9 @@ export const AcceptInvite = () => {
       setError('');
       
       const response = await acceptInvite(token || '', data.password);
-      const { user, tokens } = response;
+      const { user } = response;
       
-      login(user, tokens);
+      login(user);
       
       try {
         const org = await getMyOrganization();
@@ -54,7 +54,7 @@ export const AcceptInvite = () => {
         console.error('Failed to fetch organization:', err);
       }
       
-      navigate('/dashboard');
+      navigate('/');
     } catch (err) {
       setError('Invalid or expired invitation token');
     } finally {
@@ -105,9 +105,9 @@ export const AcceptInvite = () => {
           </form>
           
           <div className="mt-4 sm:mt-6 text-center text-xs sm:text-sm">
-            <a href="/login" className="text-blue-600 hover:text-blue-700">
+            <Link to="/login" className="text-blue-600 hover:text-blue-700">
               Back to login
-            </a>
+            </Link>
           </div>
         </CardContent>
       </Card>

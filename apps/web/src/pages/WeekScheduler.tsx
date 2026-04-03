@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Calendar, Clock, MapPin, Briefcase, User, Wand2, ChevronRight, UserPlus, Trash2, Sparkles, SlidersHorizontal } from 'lucide-react';
+import { Calendar, Clock, MapPin, Briefcase, User, UserPlus, Trash2, Sparkles, SlidersHorizontal, Building2, Plus, Pencil } from 'lucide-react';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import api from '../services/api';
 import { queryKeys } from '../hooks/useQueryKeys';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -9,7 +10,6 @@ import { Select } from '../components/ui/Select';
 import { Modal } from '../components/ui/Modal';
 import { useAuthStore } from '../store/authStore';
 import {
-  applyDefaultTemplatesToWeek,
   getOrgSetup,
   saveOrgSetup,
   type BusinessHour,
@@ -57,6 +57,12 @@ interface Employee {
   active: boolean;
 }
 
+interface Location {
+  id: string;
+  name: string;
+  address?: string | null;
+}
+
 interface NewAssignmentDraft {
   id: string;
   baseShiftId: string;
@@ -68,20 +74,46 @@ interface ShiftGroup {
   shifts: Shift[];
 }
 
+interface QuickShiftDraft {
+  isOpen: boolean;
+  startTime: string;
+  endTime: string;
+  slotCount: number;
+  employeeId: string;
+}
+
 const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const GEORGIA_TIMEZONE = 'America/New_York';
+
+const TIME_OPTIONS = Array.from({ length: 96 }, (_, index) => {
+  const hour = Math.floor(index / 4);
+  const minute = (index % 4) * 15;
+  const value = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  const meridiem = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+  return {
+    value,
+    label: `${displayHour}:${String(minute).padStart(2, '0')} ${meridiem}`,
+  };
+});
 
 const fetchScheduleWeeks = async (): Promise<ScheduleWeek[]> => {
   const response = await api.get('/schedules/week');
   return response.data;
 };
 
-const fetchShifts = async (weekId: string): Promise<Shift[]> => {
-  const response = await api.get('/shifts', { params: { weekId } });
+const fetchShifts = async (weekId: string, locationId?: string): Promise<Shift[]> => {
+  const response = await api.get('/shifts', { params: { weekId, ...(locationId ? { locationId } : {}) } });
   return response.data;
 };
 
 const fetchEmployees = async (orgId: string): Promise<Employee[]> => {
   const response = await api.get(`/org/${orgId}/employees`);
+  return response.data;
+};
+
+const fetchLocations = async (): Promise<Location[]> => {
+  const response = await api.get('/locations');
   return response.data;
 };
 
@@ -128,6 +160,7 @@ export const WeekScheduler = () => {
     { name: 'Morning Shift', dayOfWeek: 1, startTime: '09:00', endTime: '17:00', requiredHeadcount: 1 },
   ]);
   const [schedulingMode, setSchedulingMode] = useState<'PASSIVE' | 'PROACTIVE'>('PASSIVE');
+  const [selectedLocationId, setSelectedLocationId] = useState<string>('');
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
   const [selectedShiftGroupKey, setSelectedShiftGroupKey] = useState<string | null>(null);
   const [pendingAssignments, setPendingAssignments] = useState<Record<string, string>>({});
@@ -137,6 +170,14 @@ export const WeekScheduler = () => {
   const [showStrategyConfig, setShowStrategyConfig] = useState(false);
   const [pendingModeChange, setPendingModeChange] = useState<'PASSIVE' | 'PROACTIVE' | null>(null);
   const [daySaveFeedback, setDaySaveFeedback] = useState<string>('');
+  const [quickShiftDrafts, setQuickShiftDrafts] = useState<Record<number, QuickShiftDraft>>({});
+  const [creatingQuickShiftDay, setCreatingQuickShiftDay] = useState<number | null>(null);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [editingGroupDraft, setEditingGroupDraft] = useState<{ startTime: string; endTime: string }>({
+    startTime: '09:00',
+    endTime: '17:00',
+  });
+  const [savingGroupId, setSavingGroupId] = useState<string | null>(null);
 
   const { data: weeks, isLoading: weeksLoading } = useQuery({
     queryKey: queryKeys.schedules.week('list'),
@@ -149,9 +190,15 @@ export const WeekScheduler = () => {
   });
 
   const { data: shifts, isLoading: shiftsLoading } = useQuery({
-    queryKey: queryKeys.shifts.list(selectedWeekId),
-    queryFn: () => fetchShifts(selectedWeekId),
-    enabled: !!selectedWeekId,
+    queryKey: queryKeys.shifts.list(selectedWeekId, selectedLocationId || undefined),
+    queryFn: () => fetchShifts(selectedWeekId, selectedLocationId || undefined),
+    enabled: !!selectedWeekId && !!selectedLocationId,
+  });
+
+  const { data: locations = [] } = useQuery({
+    queryKey: queryKeys.locations.list(user?.orgId || 'unknown'),
+    queryFn: fetchLocations,
+    enabled: Boolean(user?.orgId),
   });
 
   const { data: employees = [] } = useQuery({
@@ -160,14 +207,323 @@ export const WeekScheduler = () => {
     enabled: Boolean(user?.orgId),
   });
 
+  // Fetch employees filtered by location group
+  const { data: locationEmployees } = useQuery({
+    queryKey: queryKeys.employeeGroups.byLocation(selectedLocationId),
+    queryFn: async () => {
+      const response = await api.get(`/employee-groups/by-location/${selectedLocationId}/employees`);
+      return (response.data as any[]).map((emp) => ({
+        ...emp,
+        active: emp.isActive ?? emp.active ?? true,
+      })) as Employee[];
+    },
+    enabled: Boolean(selectedLocationId),
+  });
+
+  // Use location-filtered employees if groups exist, otherwise fall back to all
+  const assignableEmployees = (locationEmployees && locationEmployees.length > 0)
+    ? locationEmployees.filter((emp) => emp.active)
+    : employees.filter((emp) => emp.active);
+  const weekOptions = [...(weeks ?? [])].sort(
+    (a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
+  );
+  const selectedWeekIndex = weekOptions.findIndex((week) => week.id === selectedWeekId);
+  const selectedWeek = selectedWeekIndex >= 0 ? weekOptions[selectedWeekIndex] : null;
+
+  const buildLocationScopedPayload = (
+    rawTemplates: DefaultShiftTemplate[],
+    hours: BusinessHour[]
+  ) => {
+    const fallbackLocationId = locations[0]?.id ?? null;
+    const defaultShiftTemplates = rawTemplates.map((template) => ({
+      ...template,
+      locationId: template.locationId ?? fallbackLocationId,
+    }));
+
+    return {
+      businessHours: hours,
+      locationBusinessHours: locations.map((location) => ({
+        locationId: location.id,
+        hours,
+      })),
+      defaultShiftTemplates,
+    };
+  };
+
   const getEmployeeRole = (employeeId: string) => {
     const employee = employees.find((e) => e.id === employeeId);
     return employee?.role || 'Employee';
   };
 
+  const getDefaultQuickShiftDraft = (): QuickShiftDraft => ({
+    isOpen: false,
+    startTime: '09:00',
+    endTime: '17:00',
+    slotCount: 1,
+    employeeId: '',
+  });
+
+  const getWeekDateForDay = (dayOfWeek: number) => {
+    if (!selectedWeek) {
+      return null;
+    }
+
+    const weekStart = new Date(selectedWeek.startDate);
+    return new Date(Date.UTC(weekStart.getUTCFullYear(), weekStart.getUTCMonth(), weekStart.getUTCDate() + dayOfWeek));
+  };
+
+  const getWeekDateKeyForDay = (dayOfWeek: number) => {
+    const dayDate = getWeekDateForDay(dayOfWeek);
+    if (!dayDate) return null;
+    return formatInTimeZone(dayDate, 'UTC', 'yyyy-MM-dd');
+  };
+
+  const formatShiftTimeInGeorgia = (value: string | Date) =>
+    formatInTimeZone(value, GEORGIA_TIMEZONE, 'h:mm a');
+
+  const getGeorgiaTimeValue = (value: string | Date) =>
+    formatInTimeZone(value, GEORGIA_TIMEZONE, 'HH:mm');
+
+  const buildGeorgiaDateTimeForDay = (dayOfWeek: number, time: string) => {
+    const dateKey = getWeekDateKeyForDay(dayOfWeek);
+    if (!dateKey) return null;
+    return fromZonedTime(`${dateKey}T${time}:00`, GEORGIA_TIMEZONE);
+  };
+
+  const buildDateTimeForDay = (dayOfWeek: number, time: string) => {
+    const [hours, minutes] = time.split(':').map((value) => Number(value));
+    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+      return null;
+    }
+    return buildGeorgiaDateTimeForDay(dayOfWeek, time);
+  };
+
+  const invalidateShiftQueries = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.shifts.list(selectedWeekId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.shifts.list(selectedWeekId, selectedLocationId || undefined),
+    });
+    queryClient.invalidateQueries({ queryKey: ['analytics', 'summary'] });
+    queryClient.invalidateQueries({ queryKey: ['analytics', 'hours-comparison'] });
+  };
+
+  const createShiftWithOverlapFallback = async (payload: {
+    scheduleWeekId: string;
+    startTime: string;
+    endTime: string;
+    departmentId?: string;
+    locationId?: string;
+    employeeId: string | null;
+  }) => {
+    try {
+      const response = await api.post('/shifts', payload);
+      return { overlapFallback: false, createdShiftId: response.data?.id as string | undefined };
+    } catch (error: any) {
+      const message = String(error?.response?.data?.error || error?.message || '');
+      const overlap = message.toLowerCase().includes('overlap');
+      if (overlap && payload.employeeId) {
+        const response = await api.post('/shifts', { ...payload, employeeId: null });
+        return { overlapFallback: true, createdShiftId: response.data?.id as string | undefined };
+      }
+      throw error;
+    }
+  };
+
+  const handleAssignShift = async (shift: Shift, nextEmployeeId: string) => {
+    const previousEmployeeId = shift.employeeId ?? '';
+    const normalized = nextEmployeeId || null;
+    if ((previousEmployeeId || '') === (nextEmployeeId || '')) return;
+
+    setPendingAssignments((current) => ({ ...current, [shift.id]: nextEmployeeId }));
+
+    try {
+      await api.put(`/shifts/${shift.id}`, { employeeId: normalized });
+      invalidateShiftQueries();
+    } catch (error: any) {
+      setPendingAssignments((current) => {
+        const next = { ...current };
+        delete next[shift.id];
+        return next;
+      });
+      setDaySaveFeedback(error?.response?.data?.error || error?.message || 'Failed to update shift');
+      return;
+    }
+
+    setPendingAssignments((current) => {
+      const next = { ...current };
+      delete next[shift.id];
+      return next;
+    });
+  };
+
+  const handleDeleteShift = async (shift: Shift) => {
+    try {
+      await api.delete(`/shifts/${shift.id}`);
+      invalidateShiftQueries();
+      setDaySaveFeedback('Shift removed.');
+    } catch (error: any) {
+      setDaySaveFeedback(error?.response?.data?.error || error?.message || 'Failed to delete shift');
+    }
+  };
+
+  const handleAddPositionForShift = async (baseShift: Shift) => {
+    try {
+      await api.post('/shifts', {
+        scheduleWeekId: baseShift.scheduleWeekId ?? selectedWeekId,
+        startTime: baseShift.startTime,
+        endTime: baseShift.endTime,
+        departmentId: baseShift.departmentId ?? baseShift.department?.id ?? undefined,
+        locationId: baseShift.locationId ?? baseShift.location?.id ?? selectedLocationId,
+        employeeId: null,
+      });
+      invalidateShiftQueries();
+      setDaySaveFeedback('New position added.');
+    } catch (error: any) {
+      setDaySaveFeedback(error?.response?.data?.error || error?.message || 'Failed to add position');
+    }
+  };
+
+  const startEditingGroupTime = (groupId: string, shift: Shift) => {
+    setEditingGroupId(groupId);
+    setEditingGroupDraft({
+      startTime: getGeorgiaTimeValue(shift.startTime),
+      endTime: getGeorgiaTimeValue(shift.endTime),
+    });
+  };
+
+  const cancelEditingGroupTime = () => {
+    setEditingGroupId(null);
+    setSavingGroupId(null);
+  };
+
+  const handleSaveGroupTime = async (dayOfWeek: number, groupId: string, groupShifts: Shift[]) => {
+    const start = buildGeorgiaDateTimeForDay(dayOfWeek, editingGroupDraft.startTime);
+    const end = buildGeorgiaDateTimeForDay(dayOfWeek, editingGroupDraft.endTime);
+
+    if (!start || !end) {
+      setDaySaveFeedback('Invalid shift time.');
+      return;
+    }
+
+    if (end <= start) {
+      setDaySaveFeedback('End time must be after start time.');
+      return;
+    }
+
+    setSavingGroupId(groupId);
+    setDaySaveFeedback('');
+    const updated: Shift[] = [];
+
+    try {
+      for (const shift of groupShifts) {
+        await api.put(`/shifts/${shift.id}`, {
+          startTime: start.toISOString(),
+          endTime: end.toISOString(),
+          employeeId: shift.employeeId ?? null,
+        });
+        updated.push(shift);
+      }
+
+      invalidateShiftQueries();
+      setEditingGroupId(null);
+    } catch (error: any) {
+      // Best-effort rollback for already-updated shifts if one update fails.
+      for (const shift of updated) {
+        try {
+          await api.put(`/shifts/${shift.id}`, {
+            startTime: shift.startTime,
+            endTime: shift.endTime,
+            employeeId: shift.employeeId ?? null,
+          });
+        } catch {
+          // Ignore rollback errors and surface original failure.
+        }
+      }
+      invalidateShiftQueries();
+      setDaySaveFeedback(error?.response?.data?.error || error?.message || 'Failed to update shift time');
+    } finally {
+      setSavingGroupId(null);
+    }
+  };
+
+  const handleOpenQuickShiftDraft = (dayOfWeek: number) => {
+    setQuickShiftDrafts((current) => ({
+      ...current,
+      [dayOfWeek]: {
+        ...(current[dayOfWeek] ?? getDefaultQuickShiftDraft()),
+        isOpen: true,
+      },
+    }));
+  };
+
+  const handleUpdateQuickShiftDraft = (dayOfWeek: number, updates: Partial<QuickShiftDraft>) => {
+    setQuickShiftDrafts((current) => ({
+      ...current,
+      [dayOfWeek]: {
+        ...(current[dayOfWeek] ?? getDefaultQuickShiftDraft()),
+        ...updates,
+      },
+    }));
+  };
+
+  const handleCreateQuickShifts = async (dayOfWeek: number) => {
+    const draft = quickShiftDrafts[dayOfWeek] ?? getDefaultQuickShiftDraft();
+    const start = buildDateTimeForDay(dayOfWeek, draft.startTime);
+    const end = buildDateTimeForDay(dayOfWeek, draft.endTime);
+
+    if (!selectedWeekId || !selectedLocationId || !start || !end) {
+      setDaySaveFeedback('Select week and location before creating shifts.');
+      return;
+    }
+
+    if (end <= start) {
+      setDaySaveFeedback('End time must be after start time.');
+      return;
+    }
+
+    const slotCount = Math.max(1, Number(draft.slotCount) || 1);
+    setCreatingQuickShiftDay(dayOfWeek);
+    setDaySaveFeedback('');
+    let overlapWarnings = 0;
+    const createdShiftIds: string[] = [];
+
+    try {
+      for (let i = 0; i < slotCount; i += 1) {
+        const createResult = await createShiftWithOverlapFallback({
+          scheduleWeekId: selectedWeekId,
+          startTime: start.toISOString(),
+          endTime: end.toISOString(),
+          locationId: selectedLocationId,
+          employeeId: draft.employeeId || null,
+        });
+        if (createResult.overlapFallback) overlapWarnings += 1;
+        if (createResult.createdShiftId) createdShiftIds.push(createResult.createdShiftId);
+      }
+
+      invalidateShiftQueries();
+      setQuickShiftDrafts((current) => ({
+        ...current,
+        [dayOfWeek]: { ...getDefaultQuickShiftDraft(), isOpen: false },
+      }));
+      if (overlapWarnings > 0) {
+        setDaySaveFeedback('Some employees had overlaps. Conflicting slots were created as unassigned.');
+      } else {
+        setDaySaveFeedback(`${slotCount} shift ${slotCount === 1 ? 'slot' : 'slots'} added.`);
+      }
+    } catch (error: any) {
+      setDaySaveFeedback(error?.response?.data?.error || error?.message || 'Failed to create shift slots');
+    } finally {
+      setCreatingQuickShiftDay(null);
+    }
+  };
+
   const saveDayChangesMutation = useMutation({
     mutationFn: async () => {
-      const updates = selectedDayShifts
+      // Process all week shifts when no day modal is open; otherwise just the selected day
+      const shiftsToProcess =
+        selectedDay === null ? (shifts ?? []) : selectedDayShifts;
+
+      const updates = shiftsToProcess
         .filter((shift) => !removedShiftIds.has(shift.id))
         .filter((shift) => pendingAssignments[shift.id] !== undefined)
         .filter((shift) => {
@@ -190,7 +546,7 @@ export const WeekScheduler = () => {
         }>
       >((acc, entry) => {
         if (!entry.baseShiftId) return acc;
-        const baseShift = selectedDayShifts.find((shift) => shift.id === entry.baseShiftId);
+        const baseShift = shiftsToProcess.find((shift) => shift.id === entry.baseShiftId);
         if (!baseShift) return acc;
 
         acc.push({
@@ -245,6 +601,9 @@ export const WeekScheduler = () => {
         setDaySaveFeedback('Shift slots saved.');
       }
       queryClient.invalidateQueries({ queryKey: queryKeys.shifts.list(selectedWeekId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.shifts.list(selectedWeekId, selectedLocationId || undefined),
+      });
       queryClient.invalidateQueries({ queryKey: ['analytics', 'summary'] });
       queryClient.invalidateQueries({ queryKey: ['analytics', 'hours-comparison'] });
     },
@@ -255,10 +614,12 @@ export const WeekScheduler = () => {
   });
 
   const saveSetupMutation = useMutation({
-    mutationFn: async () =>
-      saveOrgSetup({
-        businessHours: setupHours,
-        defaultShiftTemplates: templates,
+    mutationFn: async () => {
+      const scoped = buildLocationScopedPayload(templates, setupHours);
+      return saveOrgSetup({
+        businessHours: scoped.businessHours,
+        locationBusinessHours: scoped.locationBusinessHours,
+        defaultShiftTemplates: scoped.defaultShiftTemplates,
         clockInEarlyAllowanceMinutes: setup?.clockInEarlyAllowanceMinutes ?? 5,
         timezone: setup?.timezone,
         dailyOtcThreshold: setup?.dailyOtcThreshold,
@@ -266,18 +627,10 @@ export const WeekScheduler = () => {
         maxHoursPerWeek: setup?.maxHoursPerWeek,
         schedulingMode,
         aiAutoScheduleEnabled: false,
-      }),
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.setup.org() });
-    },
-  });
-
-  const applyDefaultsMutation = useMutation({
-    mutationFn: async () => applyDefaultTemplatesToWeek(selectedWeekId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.shifts.list(selectedWeekId) });
-      queryClient.invalidateQueries({ queryKey: ['analytics', 'summary'] });
-      queryClient.invalidateQueries({ queryKey: ['analytics', 'hours-comparison'] });
     },
   });
 
@@ -285,15 +638,19 @@ export const WeekScheduler = () => {
     mutationFn: (weeksAhead: number) => ensureWeeks(weeksAhead),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.schedules.week('list') });
-      queryClient.invalidateQueries({ queryKey: queryKeys.shifts.list(selectedWeekId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.shifts.list(selectedWeekId, selectedLocationId || undefined),
+      });
     },
   });
 
   const updateModeMutation = useMutation({
-    mutationFn: async (mode: 'PASSIVE' | 'PROACTIVE') =>
-      saveOrgSetup({
-        businessHours: setup?.businessHours ?? setupHours,
-        defaultShiftTemplates: setup?.defaultShiftTemplates ?? templates,
+    mutationFn: async (mode: 'PASSIVE' | 'PROACTIVE') => {
+      const scoped = buildLocationScopedPayload(setup?.defaultShiftTemplates ?? templates, setup?.businessHours ?? setupHours);
+      return saveOrgSetup({
+        businessHours: scoped.businessHours,
+        locationBusinessHours: scoped.locationBusinessHours,
+        defaultShiftTemplates: scoped.defaultShiftTemplates,
         clockInEarlyAllowanceMinutes: setup?.clockInEarlyAllowanceMinutes ?? 5,
         timezone: setup?.timezone,
         dailyOtcThreshold: setup?.dailyOtcThreshold,
@@ -301,7 +658,8 @@ export const WeekScheduler = () => {
         maxHoursPerWeek: setup?.maxHoursPerWeek,
         schedulingMode: mode,
         aiAutoScheduleEnabled: false,
-      }),
+      });
+    },
     onSuccess: (_, mode) => {
       setSchedulingMode(mode);
       queryClient.invalidateQueries({ queryKey: queryKeys.setup.org() });
@@ -333,6 +691,17 @@ export const WeekScheduler = () => {
     }
     setPreparedProactiveWindow(true);
   }, [isManagerView, planningMutation, preparedProactiveWindow, schedulingMode, weeks, weeksLoading]);
+
+  useEffect(() => {
+    if (locations.length === 0) {
+      setSelectedLocationId('');
+      return;
+    }
+    // Default to first location, or reset if current is gone
+    if (!selectedLocationId || !locations.some((l) => l.id === selectedLocationId)) {
+      setSelectedLocationId(locations[0].id);
+    }
+  }, [locations, selectedLocationId]);
 
   useEffect(() => {
     if (setup?.businessHours?.length) {
@@ -386,9 +755,18 @@ export const WeekScheduler = () => {
   const shiftsByDay = useMemo(() => {
     const grouped: Record<number, Shift[]> = {};
     const shiftList = shifts ?? [];
+    const weekDateKeyToDay = new Map<string, number>();
+
+    dayNames.forEach((_, dayOfWeek) => {
+      const dateKey = getWeekDateKeyForDay(dayOfWeek);
+      if (dateKey) {
+        weekDateKeyToDay.set(dateKey, dayOfWeek);
+      }
+    });
 
     shiftList.forEach((shift) => {
-      const day = new Date(shift.startTime).getDay();
+      const shiftDateKey = formatInTimeZone(shift.startTime, GEORGIA_TIMEZONE, 'yyyy-MM-dd');
+      const day = weekDateKeyToDay.get(shiftDateKey) ?? new Date(shift.startTime).getUTCDay();
       if (!grouped[day]) grouped[day] = [];
       grouped[day].push(shift);
     });
@@ -399,7 +777,7 @@ export const WeekScheduler = () => {
     });
 
     return grouped;
-  }, [shifts]);
+  }, [shifts, selectedWeekId]);
 
   const selectedDayShifts = selectedDay === null ? [] : shiftsByDay[selectedDay] ?? [];
   const selectedDayShiftGroups = useMemo(() => groupShiftsByTimeframe(selectedDayShifts), [selectedDayShifts]);
@@ -423,6 +801,25 @@ export const WeekScheduler = () => {
     setRemovedShiftIds(new Set());
     setDaySaveFeedback('');
   };
+
+  // Clear pending edits when the user switches location
+  useEffect(() => {
+    setPendingAssignments({});
+    setNewAssignments([]);
+    setRemovedShiftIds(new Set());
+    setDaySaveFeedback('');
+    setQuickShiftDrafts({});
+    setEditingGroupId(null);
+    setSavingGroupId(null);
+    setSelectedDay(null);
+    setSelectedShiftGroupKey(null);
+  }, [selectedLocationId]);
+
+  useEffect(() => {
+    setQuickShiftDrafts({});
+    setEditingGroupId(null);
+    setSavingGroupId(null);
+  }, [selectedWeekId]);
 
   const addNewAssignmentCard = (baseShiftId: string) => {
     setNewAssignments((current) => [
@@ -633,11 +1030,7 @@ export const WeekScheduler = () => {
   }
 
   const unassignedCount = (shifts ?? []).filter((shift) => !shift.employeeId).length;
-  const weekOptions = [...(weeks ?? [])].sort(
-    (a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
-  );
-  const selectedWeekIndex = weekOptions.findIndex((week) => week.id === selectedWeekId);
-  const selectedWeek = selectedWeekIndex >= 0 ? weekOptions[selectedWeekIndex] : null;
+  const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? null;
 
   const goToPreviousWeek = () => {
     if (selectedWeekIndex > 0) {
@@ -672,7 +1065,20 @@ export const WeekScheduler = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">Weekly Scheduler</h2>
-          <p className="text-sm text-slate-500">Plan this week, next week, or up to a month ahead</p>
+          <p className="text-sm text-slate-500">
+            Plan schedules by location.{selectedLocation ? ` Currently building for ${selectedLocation.name}.` : ''}
+          </p>
+        </div>
+        <div className="w-full sm:w-[320px]">
+          <Select
+            icon={<Building2 className="h-4 w-4" />}
+            value={selectedLocationId}
+            onChange={(e) => setSelectedLocationId(e.target.value)}
+            options={locations.map((location) => ({
+                value: location.id,
+                label: location.address ? `${location.name} - ${location.address}` : location.name,
+              }))}
+          />
         </div>
         <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-3 bg-white p-2 rounded-lg border border-slate-200 shadow-sm">
           {schedulingMode === 'PROACTIVE' ? (
@@ -684,7 +1090,7 @@ export const WeekScheduler = () => {
                 <div className="text-xs text-slate-500">Selected Week</div>
                 <div className="text-sm font-semibold text-slate-900">
                   {selectedWeek
-                    ? `${new Date(selectedWeek.startDate).toLocaleDateString()} - ${new Date(selectedWeek.endDate).toLocaleDateString()}`
+                    ? `${new Date(selectedWeek.startDate).toLocaleDateString([], { timeZone: 'UTC' })} - ${new Date(selectedWeek.endDate).toLocaleDateString([], { timeZone: 'UTC' })}`
                     : 'Select a week'}
                 </div>
               </div>
@@ -702,12 +1108,6 @@ export const WeekScheduler = () => {
             <Button size="sm" variant="outline" onClick={() => setShowStrategyConfig(true)} className="flex items-center gap-1">
               <SlidersHorizontal className="h-4 w-4" />
               Schedule Config
-            </Button>
-          )}
-          {isManagerView && selectedWeekId && (
-            <Button size="sm" variant="outline" onClick={() => applyDefaultsMutation.mutate()} isLoading={applyDefaultsMutation.isPending}>
-              <Wand2 className="h-4 w-4" />
-              Apply Defaults
             </Button>
           )}
         </div>
@@ -752,24 +1152,256 @@ export const WeekScheduler = () => {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-        {dayNames.map((dayName, dayOfWeek) => {
-          const dayShifts = shiftsByDay[dayOfWeek] ?? [];
-          const dayUnassigned = dayShifts.filter((shift) => !shift.employeeId).length;
-          return (
-            <Card key={dayName} className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelectedDay(dayOfWeek)}>
-              <CardContent className="pt-5 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold text-slate-900">{dayName}</div>
-                  <ChevronRight className="h-4 w-4 text-slate-400" />
-                </div>
-                <div className="text-sm text-slate-600">{dayShifts.length} shift slots</div>
-                <div className="text-xs text-amber-600">{dayUnassigned} unassigned</div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+      {/* ── Location view: shifts shown inline, assign directly ── */}
+      {selectedLocationId && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+            Build each day quickly with <span className="font-semibold text-slate-800">New Shift</span> and instant autosave. All times are shown in Georgia time.
+          </div>
+
+          {/* Feedback banner */}
+          {daySaveFeedback && (
+            <div className="text-sm rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700">
+              {daySaveFeedback}
+            </div>
+          )}
+
+          {/* Week grid: one card per day */}
+          {shiftsLoading ? (
+            <div className="text-sm text-slate-500 py-6 text-center">Loading shifts…</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              {dayNames.map((dayName, dayOfWeek) => {
+                const rawDayShifts = shiftsByDay[dayOfWeek] ?? [];
+                const dayGroups = groupShiftsByTimeframe(rawDayShifts);
+                const dayDate = selectedWeek
+                  ? (() => {
+                      const d = getWeekDateForDay(dayOfWeek);
+                      if (!d) return null;
+                      return d.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
+                    })()
+                  : null;
+                const dayDraft = quickShiftDrafts[dayOfWeek] ?? getDefaultQuickShiftDraft();
+
+                return (
+                  <div key={dayName}>
+                    <Card className="overflow-hidden transition-colors">
+                    <div className="bg-slate-50 border-b border-slate-200 px-4 py-2.5 flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold text-slate-900 text-sm">{dayName}</div>
+                        {dayDate && <div className="text-xs text-slate-500">{dayDate}</div>}
+                      </div>
+                      <span className="text-xs text-slate-400">
+                        {rawDayShifts.length} slots
+                      </span>
+                    </div>
+                    <CardContent className="p-3 space-y-2">
+                      {dayGroups.length === 0 ? (
+                        <div className="text-xs text-slate-400 py-1">No shifts</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {dayGroups.map((group) => {
+                            const anchorShift = group.shifts[0];
+                            const groupId = `${dayOfWeek}:${group.key}`;
+                            const isEditingGroup = editingGroupId === groupId;
+                            const isSavingGroup = savingGroupId === groupId;
+                            return (
+                              <div
+                                key={group.key}
+                                className="rounded-lg border border-slate-200 p-2.5 space-y-1.5 bg-white"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
+                                    <Clock className="h-3 w-3 shrink-0" />
+                                    {formatShiftTimeInGeorgia(anchorShift.startTime)}
+                                    {' – '}
+                                    {formatShiftTimeInGeorgia(anchorShift.endTime)}
+                                  </div>
+                                  {isManagerView && (
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="px-2 text-xs"
+                                      onClick={() =>
+                                        isEditingGroup ? cancelEditingGroupTime() : startEditingGroupTime(groupId, anchorShift)
+                                      }
+                                    >
+                                      <Pencil className="h-3 w-3 mr-1" />
+                                      {isEditingGroup ? 'Cancel' : 'Edit Time'}
+                                    </Button>
+                                  )}
+                                </div>
+                                {isEditingGroup && (
+                                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 space-y-2">
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <Select
+                                        value={editingGroupDraft.startTime}
+                                        onChange={(event) =>
+                                          setEditingGroupDraft((current) => ({ ...current, startTime: event.target.value }))
+                                        }
+                                        options={TIME_OPTIONS}
+                                        className="!py-1.5 text-xs"
+                                      />
+                                      <Select
+                                        value={editingGroupDraft.endTime}
+                                        onChange={(event) =>
+                                          setEditingGroupDraft((current) => ({ ...current, endTime: event.target.value }))
+                                        }
+                                        options={TIME_OPTIONS}
+                                        className="!py-1.5 text-xs"
+                                      />
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <Button
+                                        size="sm"
+                                        className="flex-1"
+                                        isLoading={isSavingGroup}
+                                        onClick={() => handleSaveGroupTime(dayOfWeek, groupId, group.shifts)}
+                                      >
+                                        Save Time
+                                      </Button>
+                                      <Button size="sm" variant="ghost" onClick={cancelEditingGroupTime}>
+                                        Cancel
+                                      </Button>
+                                    </div>
+                                  </div>
+                                )}
+                                {group.shifts.map((shift) => (
+                                  <div key={shift.id} className="flex items-center gap-1.5">
+                                    <div className="flex-1 min-w-0">
+                                      <Select
+                                        value={pendingAssignments[shift.id] ?? shift.employeeId ?? ''}
+                                        onChange={(e) => handleAssignShift(shift, e.target.value)}
+                                        options={[
+                                          { value: '', label: 'Unassigned' },
+                                          ...assignableEmployees.map((emp) => ({
+                                              value: emp.id,
+                                              label: `${emp.firstName} ${emp.lastName}`,
+                                            })),
+                                        ]}
+                                      />
+                                    </div>
+                                    {isManagerView && (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="text-red-500 shrink-0 px-1"
+                                        onClick={() => handleDeleteShift(shift)}
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </Button>
+                                    )}
+                                  </div>
+                                ))}
+
+                                {isManagerView && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="w-full text-xs mt-1"
+                                    onClick={() => handleAddPositionForShift(anchorShift)}
+                                  >
+                                    <UserPlus className="w-3 h-3 mr-1" />
+                                    Add Position
+                                  </Button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {isManagerView && (
+                        <div className="pt-1 border-t border-slate-100 space-y-2">
+                          {dayDraft.isOpen ? (
+                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 space-y-2">
+                              <div className="text-xs font-semibold text-slate-700">Quick New Shift</div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <Select
+                                  value={dayDraft.startTime}
+                                  options={TIME_OPTIONS}
+                                  className="!py-1.5 text-xs"
+                                  onChange={(event) =>
+                                    handleUpdateQuickShiftDraft(dayOfWeek, { startTime: event.target.value })
+                                  }
+                                />
+                                <Select
+                                  value={dayDraft.endTime}
+                                  options={TIME_OPTIONS}
+                                  className="!py-1.5 text-xs"
+                                  onChange={(event) =>
+                                    handleUpdateQuickShiftDraft(dayOfWeek, { endTime: event.target.value })
+                                  }
+                                />
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={dayDraft.slotCount}
+                                  className="border border-slate-300 rounded px-2 py-1.5 text-xs bg-white"
+                                  onChange={(event) =>
+                                    handleUpdateQuickShiftDraft(dayOfWeek, {
+                                      slotCount: Math.max(1, Number(event.target.value) || 1),
+                                    })
+                                  }
+                                />
+                                <Select
+                                  value={dayDraft.employeeId}
+                                  onChange={(event) =>
+                                    handleUpdateQuickShiftDraft(dayOfWeek, { employeeId: event.target.value })
+                                  }
+                                  options={[
+                                    { value: '', label: 'Unassigned' },
+                                    ...assignableEmployees.map((employee) => ({
+                                      value: employee.id,
+                                      label: `${employee.firstName} ${employee.lastName}`,
+                                    })),
+                                  ]}
+                                  className="!py-1.5 text-xs"
+                                />
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => handleCreateQuickShifts(dayOfWeek)}
+                                  isLoading={creatingQuickShiftDay === dayOfWeek}
+                                >
+                                  Create
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleUpdateQuickShiftDraft(dayOfWeek, { isOpen: false })}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full text-xs"
+                              onClick={() => handleOpenQuickShiftDraft(dayOfWeek)}
+                            >
+                              <Plus className="h-3 w-3 mr-1" />
+                              New Shift
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                    </CardContent>
+                    </Card>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+        </div>
+      )}
 
       <Modal
         isOpen={selectedDay !== null}
@@ -801,8 +1433,8 @@ export const WeekScheduler = () => {
             <div className="space-y-4">
               {selectedShiftGroup && (
                 <div className="text-xs text-slate-500">
-                  Selected time block: {new Date(selectedShiftGroup.shifts[0].startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} -{' '}
-                  {new Date(selectedShiftGroup.shifts[0].endTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                  Selected time block: {formatShiftTimeInGeorgia(selectedShiftGroup.shifts[0].startTime)} -{' '}
+                  {formatShiftTimeInGeorgia(selectedShiftGroup.shifts[0].endTime)}
                 </div>
               )}
 
@@ -819,8 +1451,8 @@ export const WeekScheduler = () => {
                   >
                     <div className="flex items-center justify-between">
                       <div className="text-sm font-semibold text-slate-900">
-                        {new Date(anchorShift.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} -{' '}
-                        {new Date(anchorShift.endTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                        {formatShiftTimeInGeorgia(anchorShift.startTime)} -{' '}
+                        {formatShiftTimeInGeorgia(anchorShift.endTime)}
                       </div>
                       <div className="text-xs text-slate-500">{group.shifts.length + groupNewAssignments.length} positions</div>
                     </div>
@@ -837,9 +1469,7 @@ export const WeekScheduler = () => {
                             onChange={(e) => setPendingAssignments((current) => ({ ...current, [shift.id]: e.target.value }))}
                             options={[
                               { value: '', label: 'Unassigned' },
-                              ...employees
-                                .filter((employee) => employee.active)
-                                .map((employee) => ({
+                              ...assignableEmployees.map((employee) => ({
                                   value: employee.id,
                                   label: `${employee.firstName} ${employee.lastName} (${employee.role})`,
                                 })),
@@ -875,9 +1505,7 @@ export const WeekScheduler = () => {
                             }
                             options={[
                               { value: '', label: 'Unassigned' },
-                              ...employees
-                                .filter((employee) => employee.active)
-                                .map((employee) => ({
+                              ...assignableEmployees.map((employee) => ({
                                   value: employee.id,
                                   label: `${employee.firstName} ${employee.lastName} (${getEmployeeRole(employee.id)})`,
                                 })),

@@ -14,14 +14,31 @@ const setupPayloadSchema = z.object({
   maxHoursPerWeek: z.number().int().min(0).max(168).optional(),
   schedulingMode: z.enum(['PASSIVE', 'PROACTIVE']).optional(),
   aiAutoScheduleEnabled: z.boolean().optional(),
-  businessHours: z.array(
-    z.object({
-      dayOfWeek: z.number().int().min(0).max(6),
-      openTime: z.string().nullable().optional(),
-      closeTime: z.string().nullable().optional(),
-      isClosed: z.boolean().optional(),
-    })
-  ),
+  businessHours: z
+    .array(
+      z.object({
+        dayOfWeek: z.number().int().min(0).max(6),
+        openTime: z.string().nullable().optional(),
+        closeTime: z.string().nullable().optional(),
+        isClosed: z.boolean().optional(),
+      })
+    )
+    .optional(),
+  locationBusinessHours: z
+    .array(
+      z.object({
+        locationId: z.string().uuid(),
+        hours: z.array(
+          z.object({
+            dayOfWeek: z.number().int().min(0).max(6),
+            openTime: z.string().nullable().optional(),
+            closeTime: z.string().nullable().optional(),
+            isClosed: z.boolean().optional(),
+          })
+        ),
+      })
+    )
+    .optional(),
   defaultShiftTemplates: z.array(
     z.object({
       name: z.string().optional(),

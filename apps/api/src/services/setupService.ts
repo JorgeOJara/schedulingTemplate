@@ -32,7 +32,11 @@ export interface OrgSetupInput {
   maxHoursPerWeek?: number;
   schedulingMode?: 'PASSIVE' | 'PROACTIVE';
   aiAutoScheduleEnabled?: boolean;
-  businessHours: BusinessHourInput[];
+  businessHours?: BusinessHourInput[];
+  locationBusinessHours?: Array<{
+    locationId: string;
+    hours: BusinessHourInput[];
+  }>;
   defaultShiftTemplates: DefaultShiftTemplateInput[];
 }
 
@@ -116,9 +120,25 @@ const isTemplateOnOpenDay = (
   return Boolean(dayHours && !dayHours.isClosed);
 };
 
+const buildHoursMapByLocation = (
+  locationIds: string[],
+  payload: OrgSetupInput
+) => {
+  const byLocation = new Map<string, BusinessHourInput[]>();
+  const locationPayload = payload.locationBusinessHours ?? [];
+  const fallbackHours = payload.businessHours ?? [];
+
+  for (const locationId of locationIds) {
+    const explicit = locationPayload.find((entry) => entry.locationId === locationId)?.hours;
+    byLocation.set(locationId, normalizeBusinessHours(explicit ?? fallbackHours));
+  }
+
+  return byLocation;
+};
+
 export const SetupService = {
   async getOrgSetup(orgId: string) {
-    const [org, businessHours, defaultShiftTemplates] = await Promise.all([
+    const [org, businessHours, defaultShiftTemplates, locations] = await Promise.all([
       prisma.organization.findFirst({
         where: { id: orgId },
         select: {
@@ -146,27 +166,47 @@ export const SetupService = {
         },
         orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
       }),
+      prisma.location.findMany({
+        where: { orgId, active: true },
+        select: { id: true, name: true, address: true, phone: true, active: true },
+        orderBy: { name: 'asc' },
+      }),
     ]);
 
     if (!org) {
       throw new Error('Organization not found');
     }
 
-    const normalizedHours = businessHours.length > 0 ? businessHours : normalizeBusinessHours([]);
+    const locationBusinessHours = locations.map((location) => {
+      const hoursForLocation = businessHours
+        .filter((entry) => entry.locationId === location.id)
+        .map((entry) => ({
+          dayOfWeek: entry.dayOfWeek,
+          openTime: entry.openTime,
+          closeTime: entry.closeTime,
+          isClosed: entry.isClosed,
+        }));
+
+      return {
+        locationId: location.id,
+        locationName: location.name,
+        hours: normalizeBusinessHours(hoursForLocation),
+      };
+    });
+
+    const normalizedHours = locationBusinessHours[0]?.hours ?? normalizeBusinessHours([]);
 
     return {
       ...org,
+      locations,
       businessHours: normalizedHours,
+      locationBusinessHours,
       defaultShiftTemplates,
     };
   },
 
   async completeOrgSetup(orgId: string, data: OrgSetupInput) {
-    const normalizedHours = normalizeBusinessHours(data.businessHours ?? []);
     const normalizedTemplates = normalizeTemplates(data.defaultShiftTemplates ?? []);
-    const hoursByDay = new Map<number, BusinessHourInput>(
-      normalizedHours.map((entry) => [entry.dayOfWeek, entry])
-    );
 
     if (
       data.clockInEarlyAllowanceMinutes !== undefined &&
@@ -209,18 +249,27 @@ export const SetupService = {
 
     const validDepartmentIds = new Set(departments.map((item) => item.id));
     const validLocationIds = new Set(locations.map((item) => item.id));
+    const locationIds = locations.map((item) => item.id);
+    const hoursByLocation = buildHoursMapByLocation(locationIds, data);
 
     normalizedTemplates.forEach((template, index) => {
-      if (!isTemplateOnOpenDay(template, hoursByDay)) {
+      const templateLocationId = template.locationId ?? null;
+      if (template.locationId && !validLocationIds.has(template.locationId)) {
+        throw new Error(`Default shift template #${index + 1} has an invalid location`);
+      }
+      const locationHours = templateLocationId ? hoursByLocation.get(templateLocationId) : null;
+      const hoursByDay = new Map<number, BusinessHourInput>((locationHours ?? []).map((entry) => [entry.dayOfWeek, entry]));
+
+      if (templateLocationId && !isTemplateOnOpenDay(template, hoursByDay)) {
         throw new Error(
-          `Default shift template #${index + 1} is on a closed day`
+          `Default shift template #${index + 1} is on a closed day for its location`
         );
+      }
+      if (locations.length > 0 && !template.locationId) {
+        throw new Error(`Default shift template #${index + 1} must be linked to a location`);
       }
       if (template.departmentId && !validDepartmentIds.has(template.departmentId)) {
         throw new Error(`Default shift template #${index + 1} has an invalid department`);
-      }
-      if (template.locationId && !validLocationIds.has(template.locationId)) {
-        throw new Error(`Default shift template #${index + 1} has an invalid location`);
       }
     });
 
@@ -240,16 +289,18 @@ export const SetupService = {
       });
 
       await tx.businessHour.deleteMany({ where: { orgId } });
-      if (normalizedHours.length > 0) {
-        await tx.businessHour.createMany({
-          data: normalizedHours.map((entry) => ({
-            orgId,
-            dayOfWeek: entry.dayOfWeek,
-            openTime: entry.openTime ?? null,
-            closeTime: entry.closeTime ?? null,
-            isClosed: entry.isClosed ?? false,
-          })),
-        });
+      const hoursRows = Array.from(hoursByLocation.entries()).flatMap(([locationId, hours]) =>
+        hours.map((entry) => ({
+          orgId,
+          locationId,
+          dayOfWeek: entry.dayOfWeek,
+          openTime: entry.openTime ?? null,
+          closeTime: entry.closeTime ?? null,
+          isClosed: entry.isClosed ?? false,
+        }))
+      );
+      if (hoursRows.length > 0) {
+        await tx.businessHour.createMany({ data: hoursRows });
       }
 
       await tx.defaultShiftTemplate.deleteMany({ where: { orgId } });

@@ -14,6 +14,7 @@ import Settings from './pages/Settings';
 import JoinRequest from './pages/JoinRequest';
 import MyProfile from './pages/MyProfile';
 import { useAuthStore } from './store/authStore';
+import { initializeSession } from './services/authService';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,19 +25,28 @@ const queryClient = new QueryClient({
 });
 
 function App() {
-  const { user, isAuthenticated, logout } = useAuthStore();
+  const { user, isAuthenticated, isBootstrapping, finishBootstrap } = useAuthStore();
   const isEmployee = user?.role === 'EMPLOYEE' || user?.role === 'employee';
 
   useEffect(() => {
-    if (!isAuthenticated) {
-      return;
-    }
+    const bootstrapSession = async () => {
+      try {
+        await initializeSession();
+      } finally {
+        finishBootstrap();
+      }
+    };
 
-    const tokens = localStorage.getItem('tokens');
-    if (!tokens) {
-      logout();
-    }
-  }, [isAuthenticated, logout]);
+    void bootstrapSession();
+  }, [finishBootstrap]);
+
+  if (isBootstrapping) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="text-sm font-medium text-slate-600">Loading session...</div>
+      </div>
+    );
+  }
 
   return (
     <QueryClientProvider client={queryClient}>

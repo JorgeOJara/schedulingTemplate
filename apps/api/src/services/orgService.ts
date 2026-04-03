@@ -86,8 +86,33 @@ export const OrgService = {
     });
 
     return employees.map((employee) => ({
-      ...employee,
+      id: employee.id,
+      email: employee.email,
+      firstName: employee.firstName,
+      lastName: employee.lastName,
+      role: employee.role,
+      orgId: employee.orgId,
+      isActive: employee.isActive,
       active: employee.isActive,
+      employeeProfile: employee.employeeProfile,
     }));
+  },
+
+  async getAccessibleBusinesses(orgId: string) {
+    const org = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: {
+        id: true,
+        name: true,
+        timezone: true,
+        createdAt: true,
+      },
+    });
+
+    if (!org) {
+      return [];
+    }
+
+    return [org];
   },
 };

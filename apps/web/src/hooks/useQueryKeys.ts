@@ -4,6 +4,7 @@ export const queryKeys = {
   },
   organizations: {
     me: () => ['organizations', 'me'],
+    businesses: () => ['organizations', 'businesses'],
     employees: (orgId: string) => ['organizations', orgId, 'employees'],
   },
   setup: {
@@ -28,7 +29,7 @@ export const queryKeys = {
       ['schedules', 'my-schedule', startDate, endDate],
   },
   shifts: {
-    list: (weekId: string) => ['shifts', weekId],
+    list: (weekId: string, locationId?: string) => ['shifts', weekId, locationId ?? 'all-locations'],
     detail: (id: string) => ['shifts', id],
   },
   timeOff: {
@@ -42,7 +43,7 @@ export const queryKeys = {
     detail: (id: string) => ['shift-swaps', id],
   },
   analytics: {
-    summary: (weekId?: string) => ['analytics', 'summary', weekId],
+    summary: (weekId?: string, locationId?: string) => ['analytics', 'summary', weekId, locationId ?? 'all-locations'],
     breakdown: (orgId: string) => ['analytics', 'breakdown', orgId],
     coverage: (weekId?: string) => ['analytics', 'coverage', weekId],
     hoursComparison: (weekId?: string) => ['analytics', 'hours-comparison', weekId],
@@ -50,6 +51,11 @@ export const queryKeys = {
   timeClock: {
     status: () => ['time-clock', 'status'],
     myWeek: (weekStart?: string) => ['time-clock', 'my-week', weekStart],
+  },
+  employeeGroups: {
+    list: (orgId: string) => ['employee-groups', orgId],
+    detail: (id: string) => ['employee-groups', id],
+    byLocation: (locationId: string) => ['employee-groups', 'by-location', locationId, 'employees'],
   },
   notifications: {
     list: (userId: string) => ['notifications', userId],

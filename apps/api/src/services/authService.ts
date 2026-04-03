@@ -1,15 +1,20 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
-import jwt, { type Secret, type SignOptions } from 'jsonwebtoken';
 import { z } from 'zod';
 import { logger } from '../config/logger.js';
 import { NotificationService } from './notificationService.js';
+import {
+  signAccessToken,
+  signInviteToken,
+  signPasswordResetToken,
+  signRefreshToken,
+  verifyAccessToken,
+  verifyInviteToken,
+  verifyPasswordResetToken,
+  verifyRefreshToken,
+} from '../utils/authTokens.js';
 
 const prisma = new PrismaClient();
-
-const JWT_SECRET = process.env.JWT_SECRET as Secret;
-const JWT_EXPIRY = process.env.JWT_EXPIRY || '15m';
-const REFRESH_TOKEN_EXPIRY = process.env.REFRESH_TOKEN_EXPIRY || '7d';
 
 export interface LoginCredentials {
   email: string;
@@ -21,15 +26,15 @@ export interface AuthTokens {
   refreshToken: string;
 }
 
-const signToken = (payload: object, expiresIn: string): string => {
-  const options: SignOptions = { expiresIn: expiresIn as SignOptions['expiresIn'] };
-  return jwt.sign(payload, JWT_SECRET, options);
-};
+const emailSchema = z.string().trim().email().transform((email) => email.toLowerCase());
+const nameSchema = z.string().trim().min(1);
+const passwordSchema = z.string().min(8);
+const organizationNameSchema = z.string().trim().min(2);
 
 export const validateLogin = (data: unknown): LoginCredentials => {
   const schema = z.object({
-    email: z.string().email(),
-    password: z.string().min(8),
+    email: emailSchema,
+    password: passwordSchema,
   });
 
   const parsed = schema.parse(data);
@@ -39,10 +44,10 @@ export const validateLogin = (data: unknown): LoginCredentials => {
 export const validateRegister = (data: unknown) => {
   const schema = z.object({
     orgId: z.string().uuid(),
-    email: z.string().email(),
-    firstName: z.string().min(1),
-    lastName: z.string().min(1),
-    password: z.string().min(8),
+    email: emailSchema,
+    firstName: nameSchema,
+    lastName: nameSchema,
+    password: passwordSchema,
     role: z.enum(['ADMIN', 'MANAGER', 'EMPLOYEE']).optional(),
   });
   return schema.parse(data);
@@ -50,11 +55,11 @@ export const validateRegister = (data: unknown) => {
 
 export const validateOwnerRegistration = (data: unknown) => {
   const schema = z.object({
-    email: z.string().email(),
-    firstName: z.string().min(1),
-    lastName: z.string().min(1),
-    password: z.string().min(8),
-    organizationName: z.string().min(2),
+    email: emailSchema,
+    firstName: nameSchema,
+    lastName: nameSchema,
+    password: passwordSchema,
+    organizationName: organizationNameSchema,
     timezone: z.string().default('America/New_York'),
   });
 
@@ -63,11 +68,11 @@ export const validateOwnerRegistration = (data: unknown) => {
 
 export const validateEmployeeJoinRegistration = (data: unknown) => {
   const schema = z.object({
-    email: z.string().email(),
-    firstName: z.string().min(1),
-    lastName: z.string().min(1),
-    password: z.string().min(8),
-    organizationName: z.string().min(2),
+    email: emailSchema,
+    firstName: nameSchema,
+    lastName: nameSchema,
+    password: passwordSchema,
+    organizationName: organizationNameSchema,
   });
 
   return schema.parse(data);
@@ -76,9 +81,9 @@ export const validateEmployeeJoinRegistration = (data: unknown) => {
 export const validateInvite = (data: unknown) => {
   const schema = z.object({
     orgId: z.string().uuid(),
-    email: z.string().email(),
-    firstName: z.string().min(1),
-    lastName: z.string().min(1),
+    email: emailSchema,
+    firstName: nameSchema,
+    lastName: nameSchema,
     role: z.enum(['ADMIN', 'MANAGER', 'EMPLOYEE']),
   });
   return schema.parse(data);
@@ -87,9 +92,17 @@ export const validateInvite = (data: unknown) => {
 export const validatePasswordReset = (data: unknown) => {
   const schema = z.object({
     token: z.string().min(1),
-    password: z.string().min(8),
+    password: passwordSchema,
   });
   return schema.parse(data);
+};
+
+export const validateForgotPassword = (data: unknown) => {
+  return z.object({ email: emailSchema }).parse(data);
+};
+
+export const validateAcceptInvite = (data: unknown) => {
+  return z.object({ token: z.string().min(1), password: passwordSchema }).parse(data);
 };
 
 export const hashPassword = async (password: string): Promise<string> => {
@@ -104,22 +117,40 @@ export const verifyPassword = async (
 };
 
 export const createTokens = (userId: string, orgId: string, role: string): AuthTokens => {
-  const accessToken = signToken({ userId, orgId, role }, JWT_EXPIRY);
-  const refreshToken = signToken({ userId }, REFRESH_TOKEN_EXPIRY);
+  const accessToken = signAccessToken(userId, orgId, role);
+  const refreshToken = signRefreshToken(userId);
   return { accessToken, refreshToken };
 };
 
 export const verifyToken = (token: string): { userId: string; orgId: string; role: string } | null => {
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; orgId: string; role: string };
-    return decoded;
-  } catch {
-    return null;
-  }
+  return verifyAccessToken(token);
 };
 
+const sanitizeUser = (user: {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: string;
+  orgId: string;
+}): {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: string;
+  orgId: string;
+} => ({
+  id: user.id,
+  email: user.email,
+  firstName: user.firstName,
+  lastName: user.lastName,
+  role: user.role,
+  orgId: user.orgId,
+});
+
 export const AuthService = {
-  async login(credentials: LoginCredentials): Promise<{ user: any; tokens: AuthTokens } | null> {
+  async login(credentials: LoginCredentials): Promise<{ user: ReturnType<typeof sanitizeUser>; tokens: AuthTokens } | null> {
     const { email, password } = validateLogin(credentials);
 
     const user = await prisma.user.findUnique({
@@ -146,10 +177,10 @@ export const AuthService = {
       data: { lastLoginAt: new Date() },
     });
 
-    return { user, tokens };
+    return { user: sanitizeUser(user), tokens };
   },
 
-  async register(data: unknown): Promise<{ user: any; tokens: AuthTokens } | null> {
+  async register(data: unknown): Promise<{ user: ReturnType<typeof sanitizeUser>; tokens: AuthTokens } | null> {
     const { orgId, email, firstName, lastName, password, role = 'EMPLOYEE' } = validateRegister(data);
 
     const existingUser = await prisma.user.findUnique({
@@ -178,10 +209,10 @@ export const AuthService = {
 
     const tokens = createTokens(user.id, user.orgId, user.role);
 
-    return { user, tokens };
+    return { user: sanitizeUser(user), tokens };
   },
 
-  async registerOwner(data: unknown): Promise<{ user: any; tokens: AuthTokens } | null> {
+  async registerOwner(data: unknown): Promise<{ user: ReturnType<typeof sanitizeUser>; tokens: AuthTokens } | null> {
     const { email, firstName, lastName, password, organizationName, timezone } = validateOwnerRegistration(data);
 
     const [existingUser, existingOrg] = await Promise.all([
@@ -221,7 +252,7 @@ export const AuthService = {
     });
 
     const tokens = createTokens(result.id, result.orgId, result.role);
-    return { user: result, tokens };
+    return { user: sanitizeUser(result), tokens };
   },
 
   async registerEmployeeJoin(data: unknown): Promise<{ pendingUserId: string; orgId: string } | null> {
@@ -364,7 +395,7 @@ export const AuthService = {
       return null;
     }
 
-    const token = signToken({ email, firstName, lastName, role, orgId }, '7d');
+    const token = signInviteToken({ email, firstName, lastName, role, orgId });
 
     const user = await prisma.user.create({
       data: {
@@ -385,11 +416,11 @@ export const AuthService = {
     return { id: user.id, token };
   },
 
-  async acceptInvite(token: string, password: string): Promise<{ user: any; tokens: AuthTokens } | null> {
-    let decoded: any;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch {
+  async acceptInvite(rawToken: string, rawPassword: string): Promise<{ user: ReturnType<typeof sanitizeUser>; tokens: AuthTokens } | null> {
+    const { token, password } = validateAcceptInvite({ token: rawToken, password: rawPassword });
+    const decoded = verifyInviteToken(token);
+
+    if (!decoded) {
       return null;
     }
 
@@ -397,7 +428,13 @@ export const AuthService = {
       where: { email: decoded.email },
     });
 
-    if (!user || user.isActive) {
+    if (
+      !user ||
+      user.isActive ||
+      user.inviteToken !== token ||
+      !user.inviteTokenExpiry ||
+      user.inviteTokenExpiry.getTime() < Date.now()
+    ) {
       return null;
     }
 
@@ -416,10 +453,12 @@ export const AuthService = {
 
     const tokens = createTokens(user.id, user.orgId, user.role);
 
-    return { user, tokens };
+    return { user: sanitizeUser(user), tokens };
   },
 
-  async forgotPassword(email: string): Promise<boolean> {
+  async forgotPassword(rawEmail: string): Promise<boolean> {
+    const { email } = validateForgotPassword({ email: rawEmail });
+
     const user = await prisma.user.findUnique({
       where: { email },
     });
@@ -428,7 +467,7 @@ export const AuthService = {
       return false;
     }
 
-    const token = signToken({ userId: user.id }, '1h');
+    const token = signPasswordResetToken(user.id);
 
     await prisma.user.update({
       where: { id: user.id },
@@ -441,11 +480,11 @@ export const AuthService = {
     return true;
   },
 
-  async resetPassword(token: string, password: string): Promise<boolean> {
-    let decoded: any;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch {
+  async resetPassword(rawToken: string, rawPassword: string): Promise<boolean> {
+    const { token, password } = validatePasswordReset({ token: rawToken, password: rawPassword });
+    const decoded = verifyPasswordResetToken(token);
+
+    if (!decoded) {
       return false;
     }
 
@@ -453,7 +492,13 @@ export const AuthService = {
       where: { id: decoded.userId },
     });
 
-    if (!user || !user.passwordResetToken || user.passwordResetToken !== token) {
+    if (
+      !user ||
+      !user.passwordResetToken ||
+      user.passwordResetToken !== token ||
+      !user.passwordResetTokenExpiry ||
+      user.passwordResetTokenExpiry.getTime() < Date.now()
+    ) {
       return false;
     }
 
@@ -471,11 +516,10 @@ export const AuthService = {
     return true;
   },
 
-  async refreshTokens(refreshToken: string): Promise<{ accessToken: string; refreshToken: string } | null> {
-    let decoded: any;
-    try {
-      decoded = jwt.verify(refreshToken, JWT_SECRET) as { userId: string };
-    } catch {
+  async refreshTokens(refreshToken: string): Promise<{ user: ReturnType<typeof sanitizeUser>; tokens: AuthTokens } | null> {
+    const decoded = verifyRefreshToken(refreshToken);
+
+    if (!decoded) {
       return null;
     }
 
@@ -487,9 +531,10 @@ export const AuthService = {
       return null;
     }
 
-    const newTokens = createTokens(user.id, user.orgId, user.role);
-
-    return newTokens;
+    return {
+      user: sanitizeUser(user),
+      tokens: createTokens(user.id, user.orgId, user.role),
+    };
   },
 
   async logout(_userId: string): Promise<void> {

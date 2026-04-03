@@ -23,7 +23,7 @@ router.get('/', async (req: AuthRequest, res) => {
 // PATCH /api/v1/notifications/:id/read
 router.patch('/:id/read', async (req: AuthRequest, res) => {
   try {
-    const notification = await NotificationService.markAsRead(req.params.id, req.user!.id);
+    const notification = await NotificationService.markAsRead(String(req.params.id), req.user!.id);
     
     res.status(200).json(notification);
   } catch (error) {

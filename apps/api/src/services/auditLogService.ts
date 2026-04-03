@@ -4,45 +4,43 @@ const prisma = new PrismaClient();
 
 export interface AuditLogData {
   orgId: string;
-  actorId?: string | null;
+  userId?: string | null;
   action: string;
-  resourceId?: string | null;
-  resourceType?: string | null;
-  previousValues?: any;
-  newValue?: any;
+  targetId?: string | null;
+  targetType?: string | null;
+  details?: any;
   ipAddress?: string;
-  userAgent?: string;
 }
 
 export const AuditLogService = {
   async createAuditLog(
     orgId: string,
-    actorId: string | null,
+    userId: string | null,
     action: string,
-    resourceId: string | null,
-    resourceType: string | null,
+    targetId: string | null,
+    targetType: string | null,
     previousValues: any,
     newValue: any,
-    ipAddress?: string,
-    userAgent?: string
+    ipAddress?: string
   ) {
     return await prisma.auditLog.create({
       data: {
         orgId,
-        actorId,
+        userId,
         action,
-        resourceId,
-        resourceType,
-        previousValues: previousValues ? JSON.stringify(previousValues) : null,
-        newValue: newValue ? JSON.stringify(newValue) : null,
+        targetId,
+        targetType: targetType ?? 'UNKNOWN',
+        details: JSON.stringify({
+          previousValues: previousValues ?? null,
+          newValue: newValue ?? null,
+        }),
         ipAddress,
-        userAgent,
       },
     });
   },
 
   async getOrgAuditLogs(orgId: string, filters?: {
-    actorId?: string;
+    userId?: string;
     action?: string;
     startDate?: string;
     endDate?: string;
@@ -50,7 +48,7 @@ export const AuditLogService = {
   }) {
     const where: any = { orgId };
 
-    if (filters?.actorId) where.actorId = filters.actorId;
+    if (filters?.userId) where.userId = filters.userId;
     if (filters?.action) where.action = filters.action;
     if (filters?.startDate) where.createdAt = { ...where.createdAt, gte: new Date(filters.startDate) };
     if (filters?.endDate) where.createdAt = { ...where.createdAt, lte: new Date(filters.endDate) };
@@ -64,7 +62,7 @@ export const AuditLogService = {
 
   async getUserAuditLogs(userId: string) {
     return await prisma.auditLog.findMany({
-      where: { actorId: userId },
+      where: { userId },
       orderBy: { createdAt: 'desc' },
     });
   },

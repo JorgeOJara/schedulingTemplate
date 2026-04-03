@@ -1,11 +1,47 @@
 import { Router } from 'express';
 import { AuthService } from '../../services/authService.js';
 import { AuthRequest, authMiddleware, rbacMiddleware } from '../../middleware/auth.js';
+import env from '../../config/env.js';
+import { rateLimit } from '../../middleware/rateLimit.js';
+import {
+  clearRefreshTokenCookie,
+  getRefreshTokenFromRequest,
+  setNoStoreHeaders,
+  setRefreshTokenCookie,
+} from '../../utils/authCookies.js';
+import { logger } from '../../config/logger.js';
 
 const router = Router();
+const publicAuthRateLimit = rateLimit({
+  windowMs: env.RATE_LIMIT_WINDOW,
+  maxRequests: env.AUTH_RATE_LIMIT_MAX,
+  keyGenerator: (req) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const email =
+      typeof req.body?.email === 'string'
+        ? req.body.email.trim().toLowerCase()
+        : 'anonymous';
+
+    return `${ip}:${email}`;
+  },
+});
+
+const sendSessionResponse = (
+  res: Parameters<typeof setNoStoreHeaders>[0],
+  result: NonNullable<Awaited<ReturnType<typeof AuthService.login>>>,
+  statusCode = 200
+) => {
+  setNoStoreHeaders(res);
+  setRefreshTokenCookie(res, result.tokens.refreshToken);
+
+  res.status(statusCode).json({
+    user: result.user,
+    accessToken: result.tokens.accessToken,
+  });
+};
 
 // POST /api/v1/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', publicAuthRateLimit, async (req, res) => {
   try {
     const result = await AuthService.login(req.body);
 
@@ -13,55 +49,42 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials or account pending approval' });
     }
 
-    const { user, tokens } = result;
-
-    res.status(200).json({
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        orgId: user.orgId,
-      },
-      tokens,
-    });
+    sendSessionResponse(res, result);
   } catch (error) {
-    console.error('Login error:', error);
+    logger.error('Login error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /api/v1/auth/register
-router.post('/register', async (req, res) => {
+router.post('/register', authMiddleware, rbacMiddleware(['ADMIN']), async (req: AuthRequest, res) => {
   try {
-    const result = await AuthService.register(req.body);
+    const requestedRole = req.body?.role;
+
+    if (requestedRole === 'ADMIN' && req.user?.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only admins can create admin users' });
+    }
+
+    const result = await AuthService.register({
+      ...req.body,
+      orgId: req.user!.orgId,
+    });
 
     if (!result) {
       return res.status(409).json({ error: 'User already exists' });
     }
 
-    const { user, tokens } = result;
-
     res.status(201).json({
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        orgId: user.orgId,
-      },
-      tokens,
+      user: result.user,
     });
   } catch (error) {
-    console.error('Registration error:', error);
+    logger.error('Registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /api/v1/auth/register-owner
-router.post('/register-owner', async (req, res) => {
+router.post('/register-owner', publicAuthRateLimit, async (req, res) => {
   try {
     const result = await AuthService.registerOwner(req.body);
 
@@ -69,27 +92,15 @@ router.post('/register-owner', async (req, res) => {
       return res.status(409).json({ error: 'Owner email or organization name already exists' });
     }
 
-    const { user, tokens } = result;
-
-    res.status(201).json({
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        orgId: user.orgId,
-      },
-      tokens,
-    });
+    sendSessionResponse(res, result, 201);
   } catch (error) {
-    console.error('Owner registration error:', error);
+    logger.error('Owner registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /api/v1/auth/register-employee
-router.post('/register-employee', async (req, res) => {
+router.post('/register-employee', publicAuthRateLimit, async (req, res) => {
   try {
     const result = await AuthService.registerEmployeeJoin(req.body);
 
@@ -103,7 +114,7 @@ router.post('/register-employee', async (req, res) => {
       orgId: result.orgId,
     });
   } catch (error) {
-    console.error('Employee registration error:', error);
+    logger.error('Employee registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -118,7 +129,7 @@ router.get(
       const pendingEmployees = await AuthService.getPendingEmployees(req.user!.orgId);
       res.status(200).json(pendingEmployees);
     } catch (error) {
-      console.error('Get pending employees error:', error);
+      logger.error('Get pending employees error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -135,7 +146,7 @@ router.patch(
       const result = await AuthService.reviewPendingEmployee(
         req.user!.orgId,
         req.user!.id,
-        req.params.userId,
+        String(req.params.userId),
         decision
       );
 
@@ -145,16 +156,23 @@ router.patch(
 
       res.status(200).json(result);
     } catch (error) {
-      console.error('Review pending employee error:', error);
+      logger.error('Review pending employee error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
 );
 
 // POST /api/v1/auth/invite
-router.post('/invite', async (req, res) => {
+router.post('/invite', authMiddleware, rbacMiddleware(['ADMIN', 'MANAGER']), async (req: AuthRequest, res) => {
   try {
-    const result = await AuthService.invite(req.body);
+    if (req.body?.role === 'ADMIN' && req.user?.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only admins can invite admin users' });
+    }
+
+    const result = await AuthService.invite({
+      ...req.body,
+      orgId: req.user!.orgId,
+    });
 
     if (!result) {
       return res.status(409).json({ error: 'User already exists' });
@@ -162,13 +180,13 @@ router.post('/invite', async (req, res) => {
 
     res.status(201).json({ message: 'Invite sent', token: result.token });
   } catch (error) {
-    console.error('Invite error:', error);
+    logger.error('Invite error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /api/v1/auth/accept-invite
-router.post('/accept-invite', async (req, res) => {
+router.post('/accept-invite', publicAuthRateLimit, async (req, res) => {
   try {
     const { token, password } = req.body;
     const result = await AuthService.acceptInvite(token, password);
@@ -177,27 +195,15 @@ router.post('/accept-invite', async (req, res) => {
       return res.status(400).json({ error: 'Invalid or expired token' });
     }
 
-    const { user, tokens } = result;
-
-    res.status(200).json({
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        orgId: user.orgId,
-      },
-      tokens,
-    });
+    sendSessionResponse(res, result);
   } catch (error) {
-    console.error('Accept invite error:', error);
+    logger.error('Accept invite error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /api/v1/auth/forgot-password
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', publicAuthRateLimit, async (req, res) => {
   try {
     const { email } = req.body;
     const result = await AuthService.forgotPassword(email);
@@ -208,13 +214,13 @@ router.post('/forgot-password', async (req, res) => {
 
     res.status(200).json({ message: 'Password reset email sent' });
   } catch (error) {
-    console.error('Forgot password error:', error);
+    logger.error('Forgot password error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /api/v1/auth/reset-password
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', publicAuthRateLimit, async (req, res) => {
   try {
     const { token, password } = req.body;
     const result = await AuthService.resetPassword(token, password);
@@ -225,24 +231,31 @@ router.post('/reset-password', async (req, res) => {
 
     res.status(200).json({ message: 'Password reset successful' });
   } catch (error) {
-    console.error('Reset password error:', error);
+    logger.error('Reset password error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /api/v1/auth/refresh
-router.post('/refresh', async (req, res) => {
+router.post('/refresh', publicAuthRateLimit, async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    const refreshToken = getRefreshTokenFromRequest(req);
+
+    if (!refreshToken) {
+      clearRefreshTokenCookie(res);
+      return res.status(401).json({ error: 'Refresh session missing' });
+    }
+
     const result = await AuthService.refreshTokens(refreshToken);
 
     if (!result) {
+      clearRefreshTokenCookie(res);
       return res.status(401).json({ error: 'Invalid or expired refresh token' });
     }
 
-    res.status(200).json(result);
+    sendSessionResponse(res, result);
   } catch (error) {
-    console.error('Refresh token error:', error);
+    logger.error('Refresh token error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -251,9 +264,11 @@ router.post('/refresh', async (req, res) => {
 router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
   try {
     await AuthService.logout(req.user!.id);
+    clearRefreshTokenCookie(res);
+    setNoStoreHeaders(res);
     res.status(200).json({ message: 'Logged out' });
   } catch (error) {
-    console.error('Logout error:', error);
+    logger.error('Logout error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
